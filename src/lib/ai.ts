@@ -178,6 +178,9 @@ function buildSystemPrompt(interview: Interview, settings: AISettings = DEFAULT_
   const focusStr = interview.focusAreas.join(", ");
   const domainGuidance = getDomainGuidance(interview.role);
   const levelCalibration = getLevelCalibration(interview.level);
+  const hintRule = settings.behavior.allowHints
+    ? '- HINTS (nudge only): ONLY if the candidate explicitly asks for a hint or is clearly stuck, give ONE short directional nudge — a guiding question or the name of a relevant concept — at most once per question. NEVER give the solution, final answer, code, formula, or complexity. After the nudge, stop and let them try. Do not teach.'
+    : '- NEVER give hints or answers. No "consider X", "think about Y", "one approach is". If wrong, probe once then move on. DO NOT teach.';
   const minPerArea = Math.floor(interview.duration / (interview.focusAreas.length || 1));
   const candidateName = (interview as any).candidateName || extractCandidateName(interview.resume || "");
   const interviewerName = settings.persona.name || "Anita";
@@ -209,9 +212,11 @@ LEVEL: ${levelCalibration}
 CORE RULES (never break):
 - ENGLISH ONLY.
 - Output is spoken via TTS. Natural prose, no markdown.
-- NEVER give hints or answers. No "consider X", "think about Y", "one approach is". If wrong, probe once then move on. DO NOT teach.
+${hintRule}
 - NEVER reveal scores or say "good/bad answer", "correct/wrong", "nice", "great".
 - NEVER tell candidate to be brief.
+- If the candidate asks for a moment, a pause, or time to think (e.g. "give me a minute", "let me think", "hold on"): reply with ONE short sentence such as "Of course, take your time." Do NOT ask a new question, do NOT repeat the question, do NOT treat it as an answer, and NEVER end or wrap up the interview because of it.
+- Never interrupt or rush a candidate who is thinking. A long or unfinished answer is normal — let them finish before moving on.
 - QUESTIONS MUST BE SHORT AND COMPLETE. Max 2 sentences. No preamble, no filler, no "so", "alright", "moving on". Just the question.
 - Question must be concrete and self-contained — candidate should know exactly what to answer without asking for clarification.
 - ONE question per turn. No compound questions, no bullet lists, no sub-parts.
@@ -224,7 +229,7 @@ QUESTION PRIORITY:
 1. Question bank (ask EXACTLY as written, in order, never skip)
 2. Resume-specific probes
 3. General role questions
-Follow-ups: max ${settings.behavior.maxFollowUps} per question. Move on if candidate stuck or vague after 1 probe.
+Follow-ups: max ${settings.behavior.maxFollowUps} per question. Let the candidate finish their whole answer first, and only move on once they are stuck or still vague after ${settings.behavior.maxFollowUps} probe(s). Never rush the candidate through a topic.
 
 STT AWARENESS: Candidate speaks via STT which mishears words ("ports"→"pods", "env"→"ENB"). Interpret INTENT, not literal text. Don't penalize word-level errors.
 
@@ -251,7 +256,7 @@ RESUME DRILL-DOWN (catch exaggerators):
 
 TIME: ${interview.focusAreas.length} focus areas, ~${minPerArea}min each. Pace yourself. When TIME STATUS shows ≤2 min remaining, close warmly and append [END_INTERVIEW] to signal end. Never end early.${customBlock}${cultureBlock}${bannedBlock}
 
-OVERRIDE ANY ORG GUIDELINES if they conflict with: English-only, no hints, no score reveals.`;
+OVERRIDE ANY ORG GUIDELINES if they conflict with: English-only, ${settings.behavior.allowHints ? "no solutions or full answers" : "no hints"}, no score reveals.`;
 }
 
 function buildResumeContext(interview: Interview): string {
@@ -354,6 +359,15 @@ export function buildInterviewPrompt(
       timeNote = `\n\nTIME STATUS: About ${remaining} minutes remaining. Start wrapping up — finish your current topic, then move to closing.`;
     } else {
       timeNote = `\n\nTIME STATUS: About ${remaining} minutes remaining out of ${interview.duration}. ${elapsedMin < 2 ? "Interview just started." : "Pace yourself across remaining focus areas."}`;
+    }
+    // Pacing: keep the model on its time budget per focus area instead of racing to the end.
+    const areas = Math.max(1, interview.focusAreas?.length || 1);
+    const perArea = Math.max(1, Math.floor(interview.duration / areas));
+    const currentArea = Math.min(areas, Math.floor(elapsedMin / perArea) + 1);
+    timeNote += `\nPACING: ${elapsedMin} of ${interview.duration} min used; budget is ~${perArea} min per focus area (${areas} total), so you should be in area ${currentArea} of ${areas}. Use the full time: ask follow-ups and go deeper rather than moving on early, and do not start closing before the final minutes.`;
+    // Hard rule while there is still real time left: never close, say goodbye, or emit [END_INTERVIEW].
+    if (remaining > 2) {
+      timeNote += `\nDO NOT end the interview, say goodbye, thank the candidate for their time, or output [END_INTERVIEW] — ${remaining} minutes remain. If you have covered the planned questions, go deeper on resume projects, edge cases, or trade-offs until time is nearly up.`;
     }
   }
 

@@ -12,7 +12,9 @@ export async function GET() {
     // STT
     sttProviders: (process.env.STT_CLIENT_PROVIDERS || "deepgram,browser").split(",").map(s => s.trim()),
     sttBackend: process.env.STT_PROVIDER || "deepgram",
-    silenceDelayMs: parseInt(process.env.SILENCE_DELAY_MS || "3000"),
+    // What the browser must send: raw 16 kHz PCM for Voxtral, a WebM/Opus stream for everything else
+    sttAudio: (process.env.STT_PROVIDER || "deepgram") === "voxtral" ? "pcm16" : "webm",
+    silenceDelayMs: parseInt(process.env.SILENCE_DELAY_MS || "6000"),
 
     // App
     appUrl: process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || "",

@@ -1,6 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isPauseRequest } from "@/lib/pause-detect";
+import { TurnBuffer } from "@/lib/turn-buffer";
+import { startPcmCapture, type PcmCapture } from "@/lib/pcm-capture";
 
 export type STTProviderName = "deepgram" | "browser";
 
@@ -13,6 +16,9 @@ interface UseSTTOptions {
   isEnding: React.MutableRefObject<boolean>;
   mediaStream: React.MutableRefObject<MediaStream | null>;
   silenceDelayMs?: number;
+  audioFormat?: "webm" | "pcm16"; // webm (MediaRecorder) for Deepgram/Soniox, pcm16 (16 kHz raw) for Voxtral
+  manualMode?: boolean; // candidate taps "Done" instead of auto-send after silence
+  onPauseRequest?: () => void; // candidate asked for a moment ("give me a minute")
   onInterim: (text: string) => void;
   onComplete: (text: string) => void;
   onInterrupt?: () => void; // called when candidate speaks during AI speech — stops TTS
@@ -24,12 +30,22 @@ interface UseSTTReturn {
   provider: STTProviderName | null;
   start: () => void;
   stop: () => void;
+  submitNow: () => void; // send what the candidate has said so far, immediately
 }
 
 export function useSTT(options: UseSTTOptions): UseSTTReturn {
-  const { providers, interviewId, token, isAISpeaking, isStarted, isEnding, mediaStream, silenceDelayMs = 4000, onInterim, onComplete, onInterrupt } = options;
+  const { providers, interviewId, token, isAISpeaking, isStarted, isEnding, mediaStream, silenceDelayMs = 6000, audioFormat = "webm", manualMode = false, onPauseRequest, onInterim, onComplete, onInterrupt } = options;
   const onInterruptRef = useRef(onInterrupt);
   onInterruptRef.current = onInterrupt;
+  const audioFormatRef = useRef(audioFormat);
+  audioFormatRef.current = audioFormat;
+  const pcmRef = useRef<PcmCapture | null>(null);
+  const manualModeRef = useRef(manualMode);
+  manualModeRef.current = manualMode;
+  const silenceDelayRef = useRef(silenceDelayMs);
+  silenceDelayRef.current = silenceDelayMs;
+  const onPauseRef = useRef(onPauseRequest);
+  onPauseRef.current = onPauseRequest;
 
   const [connected, setConnected] = useState(false);
   const [everConnected, setEverConnected] = useState(false);
@@ -39,9 +55,7 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const browserRecRef = useRef<any>(null);
   const keepAliveRef = useRef<NodeJS.Timeout | null>(null);
-  const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const stoppedRef = useRef(false);
-  const finalBufferRef = useRef("");
   const reconnectCountRef = useRef(0);
   const reconnectingRef = useRef(false); // #6: prevent health monitor racing with reconnect
 
@@ -52,30 +66,42 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
   onCompleteRef.current = onComplete;
 
   // ─── Buffer + Trigger Logic ───────────────────────────────────────────
+  // All turn-taking timing lives in TurnBuffer (src/lib/turn-buffer.ts, unit-tested).
 
-  const clearBuffer = useCallback(() => {
-    // #1, #20: clear buffer on stop/restart to prevent stale speech leaking
-    finalBufferRef.current = "";
-    if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
-  }, []);
+  const turnRef = useRef<TurnBuffer | null>(null);
+  if (!turnRef.current) {
+    turnRef.current = new TurnBuffer({
+      getDelayMs: () => silenceDelayRef.current,
+      isManual: () => manualModeRef.current,
+      canFlush: () => !stoppedRef.current && !isEnding.current,
+      onFlush: (full) => {
+        // A short "give me a moment" is still sent (so the AI can acknowledge it) but also tells
+        // the room to stop nudging the candidate.
+        if (isPauseRequest(full)) onPauseRef.current?.();
+        onCompleteRef.current(full);
+      },
+    });
+  }
+  const turn = turnRef.current;
 
-  const handleFinalText = useCallback((text: string, speechFinal = false) => {
-    if (!text.trim() || stoppedRef.current) return;
-    finalBufferRef.current += (finalBufferRef.current ? " " : "") + text;
+  // #1, #20: clear buffer on stop/restart to prevent stale speech leaking + cancel the silence timer
+  const clearBuffer = useCallback(() => { turn.clear(); }, [turn]);
 
-    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-    silenceTimerRef.current = setTimeout(() => {
-      if (stoppedRef.current || isEnding.current) return;
-      const full = finalBufferRef.current.trim();
-      if (!full) return;
-      finalBufferRef.current = "";
-      onCompleteRef.current(full);
-    }, silenceDelayMs);
-  }, [isEnding, silenceDelayMs]);
+  const handleFinalText = useCallback((text: string, _speechFinal = false) => {
+    if (stoppedRef.current) return;
+    turn.addFinal(text);
+  }, [turn]);
 
   const handleInterimText = useCallback((text: string) => {
+    turn.setInterim(text);
     onInterimRef.current(text);
-  }, []);
+  }, [turn]);
+
+  // "Done" button: send everything said so far (including text still shown as interim) right now.
+  const submitNow = useCallback(() => {
+    if (stoppedRef.current || isEnding.current) return;
+    if (turn.submitNow()) onInterimRef.current("");
+  }, [turn, isEnding]);
 
   // ─── Deepgram: single connection for entire session ──────────────────
 
@@ -89,6 +115,7 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
     // Cleanup previous
     if (dgSocketRef.current) { try { dgSocketRef.current.close(); } catch {} }
     if (mediaRecorderRef.current?.state === "recording") { try { mediaRecorderRef.current.stop(); } catch {} }
+    if (pcmRef.current) { pcmRef.current.stop(); pcmRef.current = null; }
     if (keepAliveRef.current) { clearInterval(keepAliveRef.current); keepAliveRef.current = null; }
 
     const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -111,20 +138,34 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
         const audioTracks = mediaStream.current!.getAudioTracks();
         if (audioTracks.length === 0) return;
         const audioStream = new MediaStream(audioTracks);
-        const mimeTypes = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
-        const mimeType = mimeTypes.find((m) => MediaRecorder.isTypeSupported(m));
 
-        let recorder: MediaRecorder;
-        try {
-          recorder = mimeType ? new MediaRecorder(audioStream, { mimeType }) : new MediaRecorder(audioStream);
-        } catch {
-          recorder = new MediaRecorder(audioStream);
+        if (audioFormatRef.current === "pcm16") {
+          // Voxtral wants raw 16 kHz PCM16, not a WebM container
+          startPcmCapture(audioStream, (pcm) => {
+            if (dgSocket.readyState === WebSocket.OPEN) dgSocket.send(pcm);
+          }).then((cap) => {
+            if (stoppedRef.current || dgSocket.readyState !== WebSocket.OPEN) { cap.stop(); return; }
+            pcmRef.current = cap;
+          }).catch((err) => {
+            console.error("[STT] PCM capture failed:", err);
+            try { dgSocket.close(); } catch {}
+          });
+        } else {
+          const mimeTypes = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
+          const mimeType = mimeTypes.find((m) => MediaRecorder.isTypeSupported(m));
+
+          let recorder: MediaRecorder;
+          try {
+            recorder = mimeType ? new MediaRecorder(audioStream, { mimeType }) : new MediaRecorder(audioStream);
+          } catch {
+            recorder = new MediaRecorder(audioStream);
+          }
+          mediaRecorderRef.current = recorder;
+          recorder.ondataavailable = (e) => {
+            if (dgSocket.readyState === WebSocket.OPEN && e.data.size > 0) dgSocket.send(e.data);
+          };
+          recorder.start(250);
         }
-        mediaRecorderRef.current = recorder;
-        recorder.ondataavailable = (e) => {
-          if (dgSocket.readyState === WebSocket.OPEN && e.data.size > 0) dgSocket.send(e.data);
-        };
-        recorder.start(250);
 
         // KeepAlive every 3s — must be TEXT frame
         keepAliveRef.current = setInterval(() => {
@@ -147,7 +188,7 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
         // If candidate speaks during AI speech — interrupt (stop TTS, let them talk)
         if (isAISpeaking.current) {
           // Check if this is real speech (not just noise)
-          const hasRealText = data.type === "Results" && data.channel?.alternatives?.[0]?.transcript?.trim().length > 3;
+          const hasRealText = data.type === "Results" && (() => { const t = (data.channel?.alternatives?.[0]?.transcript || "").trim(); return t.length > 6 && t.split(/\s+/).length >= 2; })();
           if (hasRealText && onInterruptRef.current) {
             onInterruptRef.current(); // stops TTS audio, text stays on screen
             // Push interrupt text into final buffer so silence timer starts.
@@ -165,16 +206,7 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
         // delay (4s) to continue speaking. This prevents premature AI triggers
         // from Soniox's aggressive semantic endpointing (~1s).
         if (data.type === "UtteranceEnd") {
-          if (finalBufferRef.current.trim() && !stoppedRef.current) {
-            if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-            silenceTimerRef.current = setTimeout(() => {
-              if (stoppedRef.current || isEnding.current) return;
-              const full = finalBufferRef.current.trim();
-              if (!full) return;
-              finalBufferRef.current = "";
-              onCompleteRef.current(full);
-            }, silenceDelayMs);
-          }
+          if (!stoppedRef.current) turn.utteranceEnd();
           return;
         }
 
@@ -191,22 +223,9 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
           handleInterimText("");
         } else if (!isFinal && text) {
           handleInterimText(text);
-          // Interim = user is still speaking, postpone the silence trigger.
-          // BUT if we already have buffered text, restart timer so we don't
-          // wait forever for a final that may never come (esp. after interrupt
-          // where final tokens were already sent during dropped AI-speech window).
-          if (text.trim()) {
-            if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-            if (finalBufferRef.current.trim()) {
-              silenceTimerRef.current = setTimeout(() => {
-                if (stoppedRef.current || isEnding.current) return;
-                const full = finalBufferRef.current.trim();
-                if (!full) return;
-                finalBufferRef.current = "";
-                onCompleteRef.current(full);
-              }, silenceDelayMs);
-            }
-          }
+          // Interim = user is still speaking, postpone the silence trigger. If text is already
+          // buffered, restart the countdown so we never wait forever for a final that may not come.
+          if (text.trim()) turn.interimActivity();
         }
       };
 
@@ -338,6 +357,7 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
     }
     if (keepAliveRef.current) { clearInterval(keepAliveRef.current); keepAliveRef.current = null; }
     if (mediaRecorderRef.current?.state !== "inactive") { try { mediaRecorderRef.current?.stop(); } catch {} }
+    if (pcmRef.current) { pcmRef.current.stop(); pcmRef.current = null; }
 
     // #3: Browser fallback cleanup
     if (browserRecRef.current) {
@@ -386,5 +406,5 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
     return () => { stoppedRef.current = true; stop(); };
   }, [stop]);
 
-  return { connected, everConnected, provider: activeProvider, start, stop };
+  return { connected, everConnected, provider: activeProvider, start, stop, submitNow };
 }

@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getInterview, addTranscriptEntry, getProctoringViolationCount, updateInterview, addProctoringEvent } from "@/lib/store";
 import { getAIResponse, stripThinking } from "@/lib/ai";
 import { rateLimit } from "@/lib/rate-limit";
+import { canEndNow, getRemainingSeconds } from "@/lib/interview-time";
+import { cleanForTTS } from "@/lib/tts-text";
 import { validateAccessPost } from "@/lib/auth-check";
 import { pool } from "@/lib/db";
 import { getTTSProvider } from "@/lib/providers";
@@ -15,7 +17,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Too many requests" }, { status: 429 });
     }
 
-    const { interviewId, transcript, token, skipSave } = await req.json();
+    const { interviewId, transcript, token, skipSave, tts } = await req.json();
+    const ttsEnabled = tts !== false; // candidate can turn the AI voice off (text-only)
 
     if (!interviewId) {
       return NextResponse.json({ error: "Missing interviewId" }, { status: 400 });
@@ -54,7 +57,7 @@ export async function POST(req: Request) {
           severity: "flag",
           message: `No proctoring heartbeat for ${Math.round(elapsed / 1000)}s`,
           timestamp: new Date().toISOString(),
-        }).catch(() => {});
+        }).catch(() => { });
       }
     }
 
@@ -66,56 +69,50 @@ export async function POST(req: Request) {
           role: "candidate",
           text: lastEntry.text,
           timestamp: new Date().toISOString(),
-        }).catch(() => {});
+        }).catch(() => { });
       }
     }
 
     // Get AI response
     const aiRaw = await getAIResponse(interview, transcript ?? interview.transcript);
-    const hasEndSignal = aiRaw.includes("[END_INTERVIEW]");
+    const aiWantsEnd = aiRaw.includes("[END_INTERVIEW]");
+    const hasEndSignal = aiWantsEnd && canEndNow(interview);
+    if (aiWantsEnd && !hasEndSignal) {
+      console.warn(`[AI] Ignored early [END_INTERVIEW] for ${interviewId} — ${getRemainingSeconds(interview)}s still remain`);
+    }
     const aiText = aiRaw.replace(/\[END_INTERVIEW\]/g, "").trim();
 
     const cleanedText = stripThinking(aiText);
-    // Clean for TTS — remove special chars that TTS speaks literally
-    const ttsText = cleanedText
-      .replace(/[*#_~`|<>{}[\]\\]/g, "")
-      .replace(/\bhttps?:\/\/\S+/g, "")
-      .replace(/\b[\w.-]+@[\w.-]+\.\w+/g, "")
-      .replace(/(\d+)-(\w+)/g, "$1 $2")
-      .replace(/(\w+)-(\w+)/g, "$1 $2")
-      .replace(/[()]/g, "")
-      .replace(/[/:;]/g, " ")
-      .replace(/\.\.\./g, ".")
-      .replace(/—|–/g, ", ")
-      .replace(/\n+/g, " ")
-      .replace(/\s{2,}/g, " ")
-      .trim();
+    const ttsText = cleanForTTS(cleanedText);
 
-    try {
-      const ttsProvider = getTTSProvider();
+    const savePromise = addTranscriptEntry(interviewId, { role: "ai", text: aiText, timestamp: new Date().toISOString() });
 
-      // Parallelize TTS generation + AI transcript save
-      const [audioBuffer] = await Promise.all([
-        ttsProvider.synthesize(ttsText || cleanedText),
-        addTranscriptEntry(interviewId, { role: "ai", text: aiText, timestamp: new Date().toISOString() }),
-      ]);
-
-      const audioBase64 = audioBuffer.toString("base64");
-
-      if (hasEndSignal) {
-        await updateInterview(interviewId, { status: "completed", endedAt: new Date().toISOString() });
+    let audioBase64: string | null = null;
+    let audioContentType: string | null = null;
+    if (ttsEnabled) {
+      try {
+        const ttsProvider = getTTSProvider();
+        const audioBuffer = await ttsProvider.synthesize(ttsText || cleanedText);
+        audioBase64 = audioBuffer.toString("base64");
+        audioContentType = ttsProvider.contentType;
+      } catch (err) {
+        console.warn("TTS failed:", (err as Error).message);
       }
-
-      return NextResponse.json({
-        audio: audioBase64,
-        text: aiText,
-        contentType: ttsProvider.contentType,
-        endInterview: hasEndSignal,
-      });
-    } catch (err) {
-      console.warn("TTS failed:", (err as Error).message);
-      return NextResponse.json({ text: aiText, audio: null, contentType: null });
     }
+
+    await savePromise;
+
+    // The end signal must never be lost just because TTS failed
+    if (hasEndSignal) {
+      await updateInterview(interviewId, { status: "completed", endedAt: new Date().toISOString() });
+    }
+
+    return NextResponse.json({
+      audio: audioBase64,
+      text: aiText,
+      contentType: audioContentType,
+      endInterview: hasEndSignal,
+    });
   } catch (error) {
     console.error("AI speak error:", error);
     return NextResponse.json({ error: "Failed" }, { status: 500 });

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getInterview, addTranscriptEntry, getProctoringViolationCount, updateInterview } from "@/lib/store";
 import { getAIResponse } from "@/lib/ai";
 import { rateLimit } from "@/lib/rate-limit";
+import { canEndNow, getRemainingSeconds } from "@/lib/interview-time";
 import { validateAccessPost } from "@/lib/auth-check";
 import { pool } from "@/lib/db";
 
@@ -70,7 +71,12 @@ export async function POST(req: Request) {
     }
 
     const aiRaw = await getAIResponse(interview, transcript ?? interview.transcript);
-    const hasEndSignal = aiRaw.includes("[END_INTERVIEW]");
+    const aiWantsEnd = aiRaw.includes("[END_INTERVIEW]");
+    // Server-side guard: ignore an early end signal — the AI may only close in the final minutes.
+    const hasEndSignal = aiWantsEnd && canEndNow(interview);
+    if (aiWantsEnd && !hasEndSignal) {
+      console.warn(`[AI] Ignored early [END_INTERVIEW] for ${interviewId} — ${getRemainingSeconds(interview)}s still remain`);
+    }
     const aiResponse = aiRaw.replace(/\[END_INTERVIEW\]/g, "").trim();
 
     await addTranscriptEntry(interviewId, {

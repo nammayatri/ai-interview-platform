@@ -20,7 +20,7 @@ export interface AISettings {
     strongNoHireOverall: number; // default 2.0
   };
   behavior: {
-    maxFollowUps: number;         // default 1
+    maxFollowUps: number;         // default 2
     sentencesPerResponse: string; // "1-3"
     allowHints: boolean;          // default false
     customGuidelines: string;     // admin free-form, max 2000 chars
@@ -53,7 +53,7 @@ export const DEFAULT_AI_SETTINGS: AISettings = {
     strongNoHireOverall: 2.0,
   },
   behavior: {
-    maxFollowUps: 1,
+    maxFollowUps: 2,
     sentencesPerResponse: "1-3",
     allowHints: false,
     customGuidelines: "",

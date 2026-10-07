@@ -159,6 +159,12 @@ export default function AISettingsPage() {
           <Row label="Max follow-ups per question">
             <input type="number" min="0" max="5" value={settings.behavior.maxFollowUps} onChange={(e) => update("behavior.maxFollowUps", parseInt(e.target.value))} className="input w-24" />
           </Row>
+          <Row label="Allow hints (nudge only)">
+            <label className="flex items-center gap-2 text-sm text-gray-600">
+              <input type="checkbox" checked={!!settings.behavior.allowHints} onChange={(e) => update("behavior.allowHints", e.target.checked)} />
+              When on, a stuck candidate gets one short directional nudge per question — never the answer. Off = no hints.
+            </label>
+          </Row>
           <Row label="Sentences per response">
             <select value={settings.behavior.sentencesPerResponse} onChange={(e) => update("behavior.sentencesPerResponse", e.target.value)} className="input">
               <option value="1-2">1-2 (very concise)</option>

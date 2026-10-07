@@ -4,26 +4,8 @@ import { validateAccessPost } from "@/lib/auth-check";
 import { rateLimit } from "@/lib/rate-limit";
 import { pool } from "@/lib/db";
 import { getTTSProvider } from "@/lib/providers";
-
-// Clean text for TTS — remove special characters that cause TTS to speak them literally
-function cleanForTTS(text: string): string {
-  return text
-    .replace(/[*#_~`|<>{}[\]\\]/g, "") // markdown/code chars
-    .replace(/\bhttps?:\/\/\S+/g, "")  // URLs
-    .replace(/\b[\w.-]+@[\w.-]+\.\w+/g, "") // emails
-    .replace(/(\d+)-(\w+)/g, "$1 $2")  // "30-minute" → "30 minute"
-    .replace(/(\w+)-(\w+)/g, "$1 $2")  // "real-time" → "real time"
-    .replace(/[()]/g, "")              // parentheses
-    .replace(/[/:;]/g, " ")            // slashes colons semicolons
-    .replace(/\.\.\./g, ".")           // ellipsis
-    .replace(/—|–/g, ", ")             // em/en dash → comma pause
-    .replace(/\n+/g, " ")              // newlines to space
-    // Strip non-English characters — MiniMax (Chinese model) leaks CJK/Unicode
-    // that renders invisible on screen but Sarvam TTS speaks as foreign language
-    .replace(/[^\x20-\x7E\u00C0-\u024F]/g, " ") // keep ASCII + Latin Extended only
-    .replace(/\s{2,}/g, " ")           // collapse spaces
-    .trim();
-}
+import { canEndNow, getRemainingSeconds } from "@/lib/interview-time";
+import { cleanForTTS } from "@/lib/tts-text";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -35,7 +17,8 @@ export async function POST(req: Request) {
       return new Response(JSON.stringify({ error: "Too many requests" }), { status: 429 });
     }
 
-    const { interviewId, transcript, token, skipSave } = await req.json();
+    const { interviewId, transcript, token, skipSave, tts } = await req.json();
+    const ttsEnabled = tts !== false; // candidate can turn the AI voice off (text-only)
     if (!interviewId) {
       return new Response(JSON.stringify({ error: "Missing interviewId" }), { status: 400 });
     }
@@ -178,6 +161,8 @@ export async function POST(req: Request) {
             // Send original text for transcript
             safeEnqueue(encoder.encode(`data: ${JSON.stringify({ type: "text", text: cleaned, idx })}\n\n`));
 
+            if (!ttsEnabled) return; // voice off: text only, skip synthesis (also saves cost)
+
             // Clean for TTS — remove special chars and end signal
             const ttsText = cleanForTTS(cleaned);
             if (!ttsText) return;
@@ -239,7 +224,12 @@ export async function POST(req: Request) {
           console.log(`[Stream] TTS done for ${interviewId} in ${Date.now() - startTime}ms total`);
 
           // Check for [END_INTERVIEW] signal — AI decided to close
-          const hasEndSignal = fullText.includes("[END_INTERVIEW]");
+          const aiWantsEnd = fullText.includes("[END_INTERVIEW]");
+          // Server-side guard: ignore an early end signal — the AI may only close in the final minutes.
+          const hasEndSignal = aiWantsEnd && canEndNow(interview);
+          if (aiWantsEnd && !hasEndSignal) {
+            console.warn(`[Stream] Ignored early [END_INTERVIEW] for ${interviewId} — ${getRemainingSeconds(interview)}s still remain`);
+          }
           const cleanedFull = stripThinking(fullText).replace(/\[END_INTERVIEW\]/g, "").trim();
 
           if (cleanedFull) {

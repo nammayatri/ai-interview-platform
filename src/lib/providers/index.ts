@@ -52,6 +52,18 @@ export function getSTTConfig(): STTConfig {
     };
   }
 
+  if (provider === "voxtral") {
+    const apiKey = process.env.VOXTRAL_API_KEY || "";
+    const base = (process.env.VOXTRAL_URL || "ws://voxtral-stt:8000").replace(/\/+$/, "");
+    return {
+      provider: "voxtral",
+      language,
+      wsUrl: `${base}/v1/realtime`,
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+      params: { model: process.env.VOXTRAL_MODEL || "mistralai/Voxtral-Mini-4B-Realtime-2602" },
+    };
+  }
+
   if (provider === "sarvam") {
     const apiKey = process.env.SARVAM_API_KEY || "";
     return {

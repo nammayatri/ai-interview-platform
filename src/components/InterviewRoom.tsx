@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useSTT } from "@/hooks/useSTT";
+import { isPauseRequest, PAUSE_GRACE_MS } from "@/lib/pause-detect";
 import { AudioRecorder } from "./AudioRecorder";
 import { ScreenShare } from "./ScreenShare";
 import Proctoring from "./Proctoring";
@@ -135,6 +136,14 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   const [remainingSeconds, setRemainingSeconds] = useState(0);
   const [timeWarningShown, setTimeWarningShown] = useState(false);
   const [micEnabled, setMicEnabled] = useState(true);
+  // Voice turn-taking: auto-send after silence (default) or manual — candidate taps "Done answering"
+  const [manualVoice, setManualVoice] = useState(false);
+  // AI voice on/off — off = text-only (the AI's replies are shown but not spoken)
+  const [aiVoiceOn, setAiVoiceOn] = useState(true);
+  const aiVoiceRef = useRef(true);
+  aiVoiceRef.current = aiVoiceOn;
+  // While set in the future, the candidate asked for a moment — don't nudge them
+  const pauseUntilRef = useRef(0);
   const [cameraEnabled, setCameraEnabled] = useState(true);
   const [proctoringAlerts, setProctoringAlerts] = useState<ProctoringAlert[]>([]);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
@@ -160,7 +169,8 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     maxProctoringStrikes: 999,
     sttProviders: ["deepgram", "browser"] as ("deepgram" | "browser")[],
     sttBackend: "deepgram",
-    silenceDelayMs: 4000,
+    sttAudio: "webm" as "webm" | "pcm16",
+    silenceDelayMs: 6000,
   });
   useEffect(() => {
     fetch("/api/config").then(r => r.json()).then(cfg => {
@@ -560,6 +570,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
 
   // Combined AI + TTS: one request, returns audio with text in header
   const speakText = useCallback(async (text: string) => {
+    if (!aiVoiceRef.current) return; // voice off: text only
     setIsAISpeaking(true);
     isAISpeakingRef.current = true;
     setCurrentAIText(text);
@@ -567,7 +578,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       const res = await fetch("/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, interviewId, token: tokenRef.current }),
       });
       const data = await res.json();
       if (!data.audio) throw new Error("No audio in TTS response");
@@ -639,7 +650,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         const res = await fetch("/api/ai-speak-stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ interviewId, transcript: currentTranscript, token: tokenRef.current, skipSave: options?.skipSave }),
+          body: JSON.stringify({ interviewId, transcript: currentTranscript, token: tokenRef.current, skipSave: options?.skipSave, tts: aiVoiceRef.current }),
           signal: abortController.signal,
         });
 
@@ -648,7 +659,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
           const fallbackRes = await fetch("/api/ai-speak", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ interviewId, transcript: currentTranscript, token: tokenRef.current, skipSave: options?.skipSave }),
+            body: JSON.stringify({ interviewId, transcript: currentTranscript, token: tokenRef.current, skipSave: options?.skipSave, tts: aiVoiceRef.current }),
           });
           const data = await fallbackRes.json();
           if (data.text) {
@@ -787,6 +798,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     setChatInput("");
     setInterimTranscript("");
     lastActivityRef.current = Date.now();
+    if (isPauseRequest(text)) pauseUntilRef.current = Date.now() + PAUSE_GRACE_MS;
     const entry: TranscriptEntry = { role: "candidate", text, timestamp: Date.now() };
     setTranscript((prev) => {
       const updated = [...prev, entry];
@@ -795,7 +807,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     });
   }, [chatInput, isAIThinking, getAIResponse]);
 
-  // Silence watchdog — if no activity for 45s AND no interim speech, nudge AI
+  // Silence watchdog — if no activity for 90s AND no interim speech, nudge AI
   useEffect(() => { lastActivityRef.current = Date.now(); }, [transcript]);
   // Also reset on interim speech (candidate is actively talking)
   useEffect(() => { if (interimTranscript) lastActivityRef.current = Date.now(); }, [interimTranscript]);
@@ -803,10 +815,11 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     if (!isStarted || isEndingRef.current) return;
     const watchdog = setInterval(() => {
       const silenceSec = (Date.now() - lastActivityRef.current) / 1000;
-      // Only nudge if: 45s silence AND no interim speech AND AI not speaking AND not processing
+      // Only nudge if: 90s silence AND no interim speech AND AI not speaking AND not processing
       if (!micEnabled) return; // Don't nudge when deliberately muted
-      if (silenceSec > 45 && !interimTranscript && !isProcessingRef.current && !isAISpeakingRef.current) {
-        console.log("[Watchdog] 45s silence, nudging AI...");
+      if (Date.now() < pauseUntilRef.current) return; // candidate asked for a moment — leave them alone
+      if (silenceSec > 90 && !interimTranscript && !isProcessingRef.current && !isAISpeakingRef.current) {
+        console.log("[Watchdog] 90s silence, nudging AI...");
         getAIResponse([...transcript, { role: "candidate", text: "(candidate is waiting)", timestamp: Date.now() }], { skipSave: true });
         lastActivityRef.current = Date.now();
       }
@@ -824,6 +837,9 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     isEnding: isEndingRef,
     mediaStream: mediaStreamRef,
     silenceDelayMs: runtimeConfig.silenceDelayMs,
+    audioFormat: runtimeConfig.sttAudio,
+    manualMode: manualVoice,
+    onPauseRequest: () => { pauseUntilRef.current = Date.now() + PAUSE_GRACE_MS; },
     onInterim: (text) => {
       setInterimTranscript(text);
       if (text.trim()) lastActivityRef.current = Date.now();
@@ -1702,6 +1718,30 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
 
       {/* Bottom Controls */}
       <div className="flex items-center justify-center gap-2 sm:gap-4 py-3 sm:py-4 flex-wrap">
+        {/* Voice turn-taking: auto-send after a pause, or manual (tap Done when finished) */}
+        <button
+          onClick={() => setManualVoice((m) => !m)}
+          title={manualVoice ? "Switch back to automatic: the AI replies after you pause" : "Switch to manual: the AI waits until you tap Done"}
+          className={`rounded-full border px-4 py-2.5 text-sm font-medium transition-all ${manualVoice ? "border-blue-400/60 bg-blue-500/20 text-blue-200" : "border-zinc-600 text-zinc-300 hover:bg-zinc-800"}`}
+        >
+          {manualVoice ? "Manual: tap Done" : "Auto-send"}
+        </button>
+        <button
+          onClick={() => setAiVoiceOn((v) => !v)}
+          title={aiVoiceOn ? "Turn the AI's voice off (replies are shown as text only)" : "Turn the AI's voice on"}
+          className={`rounded-full border px-4 py-2.5 text-sm font-medium transition-all ${aiVoiceOn ? "border-zinc-600 text-zinc-300 hover:bg-zinc-800" : "border-amber-400/60 bg-amber-500/15 text-amber-200"}`}
+        >
+          {aiVoiceOn ? "AI voice: On" : "AI voice: Off"}
+        </button>
+        {manualVoice && (
+          <button
+            onClick={() => stt.submitNow()}
+            disabled={isAIThinking || isProcessingRef.current}
+            className="rounded-full bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition-all hover:bg-emerald-500 disabled:opacity-40"
+          >
+            Done answering
+          </button>
+        )}
         <ControlButton
           active={micEnabled}
           onClick={toggleMic}
