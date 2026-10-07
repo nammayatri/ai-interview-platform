@@ -127,6 +127,8 @@ export async function POST(req: Request) {
                 stream: true,
                 // Only send thinking param for MiniMax models (Groq/OpenAI reject it)
                 ...((process.env.AI_MODEL || "").includes("minimax") ? { thinking: { type: "disabled" } } : {}),
+                // Reasoning models (e.g. glm via LiteLLM) can burn the whole token budget thinking → empty reply.
+                ...(process.env.AI_REASONING_EFFORT ? { reasoning_effort: process.env.AI_REASONING_EFFORT } : {}),
               }),
               signal: abort.signal,
             });

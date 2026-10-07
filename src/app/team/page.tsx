@@ -19,8 +19,60 @@ export default function TeamPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [deleteTarget, setDeleteTarget] = useState<{id: string; name: string} | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState({ name: "", email: "", role: "member", password: "" });
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState("");
+  const [created, setCreated] = useState<{ email: string; password: string } | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const isAdmin = (session?.user as any)?.role === "admin";
+
+  const generatePassword = () => {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+    const bytes = crypto.getRandomValues(new Uint32Array(12));
+    setForm((f) => ({ ...f, password: Array.from(bytes, (b) => chars[b % chars.length]).join("") }));
+  };
+
+  const openAdd = () => {
+    setForm({ name: "", email: "", role: "member", password: "" });
+    setAddError("");
+    setCreated(null);
+    setCopied(false);
+    setShowAdd(true);
+  };
+
+  const addMember = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAddError("");
+    setAdding(true);
+    try {
+      const res = await fetch("/api/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setAddError(data.error || "Failed to add member");
+        return;
+      }
+      setCreated({ email: data.email, password: form.password });
+      fetchUsers();
+    } catch {
+      setAddError("Failed to add member");
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const copyCredentials = async () => {
+    if (!created) return;
+    try {
+      await navigator.clipboard.writeText(`Email: ${created.email}\nPassword: ${created.password}`);
+      setCopied(true);
+    } catch {}
+  };
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -77,6 +129,11 @@ export default function TeamPage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {isAdmin && (
+              <button onClick={openAdd} className="btn-primary !py-2 !px-4 text-sm mr-3">
+                + Add member
+              </button>
+            )}
             <span className="text-xs text-gray-500">{users.length} member{users.length !== 1 ? "s" : ""}</span>
             <span className="text-xs text-gray-300">|</span>
             <span className="text-xs text-green-600">{users.filter(u => u.is_active).length} active</span>
@@ -109,7 +166,7 @@ export default function TeamPage() {
                   <path d="M92 75h6M95 72v6" stroke="#818cf8" strokeWidth="2" strokeLinecap="round" opacity="0.5" />
                 </svg>
                 <p className="text-xl font-semibold text-gray-900 mb-2">No team members yet</p>
-                <p className="text-gray-500 max-w-sm mx-auto">Team members will appear here once they register and join your organization.</p>
+                <p className="text-gray-500 max-w-sm mx-auto">Use &quot;Add member&quot; to create an account, or members appear here once they register.</p>
               </div>
             ) : (
               <div className="divide-y divide-gray-100">
@@ -186,6 +243,93 @@ export default function TeamPage() {
           </div>
         )}
       </div>
+
+      {showAdd && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" role="dialog" aria-modal="true">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => !adding && setShowAdd(false)} />
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-scale-in">
+            {created ? (
+              <div className="p-6">
+                <h2 className="text-lg font-semibold text-gray-900 mb-1">Member added</h2>
+                <p className="text-sm text-gray-500 mb-4">
+                  Share these credentials with them securely. The password is shown only now and can&apos;t be retrieved later.
+                </p>
+                <div className="rounded-lg bg-gray-50 border border-gray-200 p-4 font-mono text-sm text-gray-800 space-y-1 break-all">
+                  <div><span className="text-gray-400">Email:</span> {created.email}</div>
+                  <div><span className="text-gray-400">Password:</span> {created.password}</div>
+                </div>
+                <div className="flex justify-end gap-2 mt-5">
+                  <button onClick={copyCredentials} className="btn-secondary !py-2 !px-4 text-sm">
+                    {copied ? "Copied" : "Copy"}
+                  </button>
+                  <button onClick={() => setShowAdd(false)} className="btn-primary !py-2 !px-4 text-sm">Done</button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={addMember} className="p-6">
+                <h2 className="text-lg font-semibold text-gray-900 mb-1">Add team member</h2>
+                <p className="text-sm text-gray-500 mb-4">The account is active immediately — no registration or approval needed.</p>
+
+                <label className="block text-xs font-medium text-gray-600 mb-1">Full name</label>
+                <input
+                  className="input-field !py-2.5 mb-3"
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  placeholder="Jane Doe"
+                  required
+                  autoFocus
+                />
+
+                <label className="block text-xs font-medium text-gray-600 mb-1">Email</label>
+                <input
+                  type="email"
+                  className="input-field !py-2.5 mb-3"
+                  value={form.email}
+                  onChange={(e) => setForm({ ...form, email: e.target.value })}
+                  placeholder="jane@nammayatri.in"
+                  required
+                />
+
+                <label className="block text-xs font-medium text-gray-600 mb-1">Role</label>
+                <select
+                  className="input-field !py-2.5 mb-3"
+                  value={form.role}
+                  onChange={(e) => setForm({ ...form, role: e.target.value })}
+                >
+                  <option value="member">Member</option>
+                  <option value="admin">Admin</option>
+                </select>
+
+                <label className="block text-xs font-medium text-gray-600 mb-1">Temporary password</label>
+                <div className="flex gap-2 mb-1">
+                  <input
+                    className="input-field !py-2.5 font-mono"
+                    value={form.password}
+                    onChange={(e) => setForm({ ...form, password: e.target.value })}
+                    placeholder="At least 8 characters"
+                    minLength={8}
+                    required
+                  />
+                  <button type="button" onClick={generatePassword} className="btn-secondary !py-2 !px-3 text-sm whitespace-nowrap">
+                    Generate
+                  </button>
+                </div>
+
+                {addError && <p className="text-sm text-red-600 mt-3">{addError}</p>}
+
+                <div className="flex justify-end gap-2 mt-5">
+                  <button type="button" onClick={() => setShowAdd(false)} disabled={adding} className="btn-secondary !py-2 !px-4 text-sm">
+                    Cancel
+                  </button>
+                  <button type="submit" disabled={adding} className="btn-primary !py-2 !px-4 text-sm disabled:opacity-40">
+                    {adding ? "Adding..." : "Add member"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
 
       <ConfirmModal
         open={!!deleteTarget}

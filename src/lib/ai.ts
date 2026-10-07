@@ -293,6 +293,8 @@ async function callAI(
       max_tokens: maxTokens,
       temperature,
       ...(config.model.includes("minimax") ? { thinking: { type: "disabled" } } : {}),
+      // Reasoning models can burn the whole token budget thinking → empty reply. Opt-in via env.
+      ...(process.env.AI_REASONING_EFFORT ? { reasoning_effort: process.env.AI_REASONING_EFFORT } : {}),
     }),
     signal: controller.signal,
   });
