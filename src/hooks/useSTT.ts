@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { isPauseRequest } from "@/lib/pause-detect";
 import { TurnBuffer } from "@/lib/turn-buffer";
 import { startPcmCapture, type PcmCapture } from "@/lib/pcm-capture";
+import { PushToTalk, type TalkState } from "@/lib/push-to-talk";
 
 export type STTProviderName = "deepgram" | "browser";
 
@@ -31,6 +32,8 @@ interface UseSTTReturn {
   start: () => void;
   stop: () => void;
   submitNow: () => void; // send what the candidate has said so far, immediately
+  talkState: TalkState; // manual mode: idle | listening | sending
+  toggleTalk: () => void; // manual mode: start listening / stop and send (button + Ctrl+M)
 }
 
 export function useSTT(options: UseSTTOptions): UseSTTReturn {
@@ -102,6 +105,36 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
     if (stoppedRef.current || isEnding.current) return;
     if (turn.submitNow()) onInterimRef.current("");
   }, [turn, isEnding]);
+
+  // ─── Manual mode: tap to start listening, tap again to stop and send ──────
+  const [talkState, setTalkState] = useState<TalkState>("idle");
+  const talkRef = useRef<PushToTalk | null>(null);
+  if (!talkRef.current) {
+    talkRef.current = new PushToTalk({
+      graceMs: 700, // let the recogniser finish the last words before sending
+      onChange: setTalkState,
+      onStart: () => {
+        turn.clear(); // drop anything stale from before the candidate pressed the button
+        onInterimRef.current("");
+        if (isAISpeaking.current) onInterruptRef.current?.(); // speaking over the AI cuts it off
+      },
+      onSubmit: () => {
+        if (stoppedRef.current || isEnding.current) return;
+        if (turn.submitNow()) onInterimRef.current("");
+      },
+    });
+  }
+  const talk = talkRef.current;
+  const toggleTalk = useCallback(() => {
+    if (!manualModeRef.current || stoppedRef.current || isEnding.current) return;
+    talk.toggle();
+  }, [talk, isEnding]);
+
+  // Leaving manual mode (or unmounting) abandons any half-finished turn
+  useEffect(() => {
+    if (!manualMode) talk.reset();
+    return () => { talk.reset(); };
+  }, [manualMode, talk]);
 
   // ─── Deepgram: single connection for entire session ──────────────────
 
@@ -184,6 +217,9 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
 
         let data: any;
         try { data = JSON.parse(raw); } catch { return; }
+
+        // Manual mode: only listen between pressing start and stop
+        if (manualModeRef.current && !talk.isAccepting()) return;
 
         // If candidate speaks during AI speech — interrupt (stop TTS, let them talk)
         if (isAISpeaking.current) {
@@ -281,6 +317,7 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
 
       recognition.onresult = (event: any) => {
         if (isAISpeaking.current) return;
+        if (manualModeRef.current && !talk.isAccepting()) return; // manual mode: only while listening
         const result = event.results[event.results.length - 1];
         const text = result[0].transcript;
         if (!result.isFinal) { handleInterimText(text); return; }
@@ -327,7 +364,7 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
     } catch {
       return false;
     }
-  }, [isAISpeaking, isEnding, handleFinalText, handleInterimText]);
+  }, [isAISpeaking, isEnding, handleFinalText, handleInterimText, talk]);
   startBrowserRef.current = startBrowser;
 
   // ─── Public API ───────────────────────────────────────────────────────
@@ -406,5 +443,5 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
     return () => { stoppedRef.current = true; stop(); };
   }, [stop]);
 
-  return { connected, everConnected, provider: activeProvider, start, stop, submitNow };
+  return { connected, everConnected, provider: activeProvider, start, stop, submitNow, talkState, toggleTalk };
 }

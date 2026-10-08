@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useSTT } from "@/hooks/useSTT";
 import { isPauseRequest, PAUSE_GRACE_MS } from "@/lib/pause-detect";
+import { isTalkShortcut } from "@/lib/push-to-talk";
 import { AudioRecorder } from "./AudioRecorder";
 import { ScreenShare } from "./ScreenShare";
 import Proctoring from "./Proctoring";
@@ -136,7 +137,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   const [remainingSeconds, setRemainingSeconds] = useState(0);
   const [timeWarningShown, setTimeWarningShown] = useState(false);
   const [micEnabled, setMicEnabled] = useState(true);
-  // Voice turn-taking: auto-send after silence (default) or manual — candidate taps "Done answering"
+  // Voice turn-taking: Auto (AI replies after a pause) or Manual (tap the mic / Ctrl+M to start, again to send)
   const [manualVoice, setManualVoice] = useState(false);
   // AI voice on/off — off = text-only (the AI's replies are shown but not spoken)
   const [aiVoiceOn, setAiVoiceOn] = useState(true);
@@ -876,6 +877,20 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       console.log("[STT] Candidate interrupted AI — stopped TTS + reset pipeline");
     },
   });
+
+  // Ctrl+M: in Manual mode, start listening / stop and send
+  const toggleTalk = stt.toggleTalk;
+  useEffect(() => {
+    if (!manualVoice || !isStarted) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!isTalkShortcut(e)) return;
+      e.preventDefault();
+      if (isAIThinking) return;
+      toggleTalk();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [manualVoice, isStarted, isAIThinking, toggleTalk]);
 
   const handleStartInterview = useCallback(async () => {
     // Request fullscreen
@@ -1718,14 +1733,42 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
 
       {/* Bottom Controls */}
       <div className="flex items-center justify-center gap-2 sm:gap-4 py-3 sm:py-4 flex-wrap">
-        {/* Voice turn-taking: auto-send after a pause, or manual (tap Done when finished) */}
-        <button
-          onClick={() => setManualVoice((m) => !m)}
-          title={manualVoice ? "Switch back to automatic: the AI replies after you pause" : "Switch to manual: the AI waits until you tap Done"}
-          className={`rounded-full border px-4 py-2.5 text-sm font-medium transition-all ${manualVoice ? "border-blue-400/60 bg-blue-500/20 text-blue-200" : "border-zinc-600 text-zinc-300 hover:bg-zinc-800"}`}
-        >
-          {manualVoice ? "Manual: tap Done" : "Auto-send"}
-        </button>
+        {/* Voice mode switch: Auto (AI replies after you pause) ⇄ Manual (you start/stop with the mic or Ctrl+M) */}
+        <div className="flex items-center gap-2 rounded-full border border-zinc-700 px-3 py-1.5" title="Auto: the AI replies after you pause. Manual: you decide when to start and stop speaking.">
+          <span className={`text-xs font-medium ${!manualVoice ? "text-white" : "text-zinc-500"}`}>Auto</span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={manualVoice}
+            aria-label="Voice mode: automatic or manual"
+            onClick={() => setManualVoice((m) => !m)}
+            className={`relative h-6 w-11 rounded-full transition-colors ${manualVoice ? "bg-blue-500" : "bg-zinc-600"}`}
+          >
+            <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${manualVoice ? "translate-x-5" : ""}`} />
+          </button>
+          <span className={`text-xs font-medium ${manualVoice ? "text-white" : "text-zinc-500"}`}>Manual</span>
+        </div>
+        {manualVoice && (
+          <button
+            type="button"
+            onClick={() => stt.toggleTalk()}
+            disabled={isAIThinking || stt.talkState === "sending"}
+            title={stt.talkState === "listening" ? "Stop and send what you said (Ctrl+M)" : "Start speaking (Ctrl+M)"}
+            className={`flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold text-white transition-all disabled:opacity-50 ${
+              stt.talkState === "listening"
+                ? "animate-pulse bg-red-600 hover:bg-red-500"
+                : stt.talkState === "sending"
+                  ? "bg-amber-600"
+                  : "bg-emerald-600 hover:bg-emerald-500"
+            }`}
+          >
+            <MicIcon className="h-5 w-5" />
+            <span>
+              {stt.talkState === "listening" ? "Listening… tap to send" : stt.talkState === "sending" ? "Sending…" : "Tap to speak"}
+            </span>
+            <kbd className="rounded bg-black/25 px-1.5 py-0.5 text-[10px] font-medium">Ctrl+M</kbd>
+          </button>
+        )}
         <button
           onClick={() => setAiVoiceOn((v) => !v)}
           title={aiVoiceOn ? "Turn the AI's voice off (replies are shown as text only)" : "Turn the AI's voice on"}
@@ -1733,15 +1776,6 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         >
           {aiVoiceOn ? "AI voice: On" : "AI voice: Off"}
         </button>
-        {manualVoice && (
-          <button
-            onClick={() => stt.submitNow()}
-            disabled={isAIThinking || isProcessingRef.current}
-            className="rounded-full bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition-all hover:bg-emerald-500 disabled:opacity-40"
-          >
-            Done answering
-          </button>
-        )}
         <ControlButton
           active={micEnabled}
           onClick={toggleMic}
