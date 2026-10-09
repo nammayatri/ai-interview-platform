@@ -1,0 +1,83 @@
+{
+  "title": "Two Sum",
+  "difficulty": "easy",
+  "tags": [
+    "arrays",
+    "hashing"
+  ],
+  "runbook": {
+    "statementMd": "Given an array of integers `nums` and an integer `target`, return the indices of the two numbers that add up to `target`. Exactly one solution exists and you may not use the same element twice.",
+    "solutionTracks": [
+      {
+        "name": "Brute force",
+        "approach": "Check every pair of elements.",
+        "timeComplexity": "O(n^2)",
+        "spaceComplexity": "O(1)",
+        "probes": [
+          "What is the cost of the inner loop as the array grows?"
+        ]
+      },
+      {
+        "name": "Hash map",
+        "approach": "One pass; store each value's index and look up target minus current.",
+        "timeComplexity": "O(n)",
+        "spaceComplexity": "O(n)",
+        "probes": [
+          "What happens with duplicate values?",
+          "What do you trade for the speed?"
+        ]
+      }
+    ],
+    "outcomeProbes": {
+      "passed": [
+        "Walk me through your approach on a small example.",
+        "What is the time complexity, and where does it come from?"
+      ],
+      "partial": [
+        "Which kind of input do you think your code fails on, and why?"
+      ],
+      "failed": [
+        "Where do you think the time limit or the wrong answer comes from?"
+      ]
+    },
+    "hintLadder": [
+      {
+        "order": 1,
+        "text": "Think about what work you repeat for every element.",
+        "notBeforeMin": 5,
+        "scoreDiscount": 0.1
+      },
+      {
+        "order": 2,
+        "text": "What could you remember about the numbers you have already seen?",
+        "afterWeakAnswers": 2,
+        "scoreDiscount": 0.15
+      }
+    ],
+    "rubric": [
+      {
+        "id": "bottleneck",
+        "text": "Identified the quadratic bottleneck in their own code",
+        "weight": 2,
+        "mapsTo": "problemSolving"
+      },
+      {
+        "id": "complexity",
+        "text": "Stated time and space complexity correctly",
+        "weight": 1,
+        "mapsTo": "technicalDepth"
+      },
+      {
+        "id": "explain",
+        "text": "Explained their approach clearly",
+        "weight": 1,
+        "mapsTo": "communication"
+      }
+    ],
+    "defaults": {
+      "budgetMin": 15,
+      "graceMin": 2,
+      "earlyDoneAfterMin": 8
+    }
+  }
+}

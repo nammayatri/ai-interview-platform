@@ -1,8 +1,15 @@
 import { NextResponse } from "next/server";
 import { randomUUID, randomBytes } from "crypto";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import { saveInterview, Interview } from "@/lib/store";
+import { requireRole } from "@/lib/rbac";
+import { insertDsaReviewRows } from "@/lib/phase-store";
+import { isUuid } from "@/lib/content-api";
+import {
+  validatePlan,
+  validateSubmissions,
+  type PhasePlan,
+  type SubmissionInput,
+} from "@/lib/runbook";
 import { sendInterviewInvite } from "@/lib/email";
 import { rateLimit } from "@/lib/rate-limit";
 import { pool } from "@/lib/db";
@@ -25,6 +32,10 @@ async function extractTextFromPDF(buffer: Buffer): Promise<string> {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireRole(req, ["admin", "interviewer"]);
+    if (auth instanceof NextResponse) return auth;
+    const session = auth;
+
     const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
     if (!rateLimit(ip, 10, 60000)) {
       return NextResponse.json({ error: "Too many requests. Try again later." }, { status: 429 });
@@ -51,6 +62,15 @@ export async function POST(req: Request) {
     }
     if (duration < 5 || duration > 180) {
       return NextResponse.json({ error: "Duration must be between 5 and 180 minutes" }, { status: 400 });
+    }
+
+    // ── DSA Review: validate the structured inputs before doing any heavy work ──
+    const isDsaReview = roundType === DSA_REVIEW;
+    let dsa: DsaCreateInput | null = null;
+    if (isDsaReview) {
+      const parsed = await parseDsaInput(formData, session.user.orgId, duration);
+      if ("error" in parsed) return NextResponse.json({ error: parsed.error }, { status: 400 });
+      dsa = parsed;
     }
 
     let resumeText = "";
@@ -87,9 +107,9 @@ export async function POST(req: Request) {
       resumeText = "No resume content available. Proceed with general interview questions for the role.";
     }
 
-    // Load question bank if selected
+    // Load question bank if selected (not used by DSA Review: the runbook replaces it)
     let questionBankQuestions: string[] = [];
-    if (questionBankId) {
+    if (questionBankId && !isDsaReview) {
       try {
         const { rows } = await pool.query("SELECT questions FROM question_banks WHERE id = $1", [questionBankId]);
         if (rows.length > 0 && rows[0].questions) {
@@ -114,7 +134,6 @@ export async function POST(req: Request) {
       resumeText += `\n\n--- INTERVIEWER NOTES ---\nThe hiring team has provided the following context. Use this to guide your questions and probe specific areas:\n${additionalContext}`;
     }
 
-    const session = await getServerSession(authOptions);
     const id = randomUUID();
     const token = randomBytes(32).toString("hex");
 
@@ -133,7 +152,7 @@ export async function POST(req: Request) {
       browserFingerprint: null,
       role,
       level,
-      focusAreas,
+      focusAreas: isDsaReview && focusAreas.length === 0 ? ["Problem Solving"] : focusAreas,
       duration,
       roundType,
       language,
@@ -145,11 +164,27 @@ export async function POST(req: Request) {
       startedAt: null,
       endedAt: null,
       expiresAt: expiresAt.toISOString(),
-      orgId: (session?.user as any)?.orgId || undefined,
-      createdBy: (session?.user as any)?.id || undefined,
+      orgId: session.user.orgId || undefined,
+      createdBy: session.user.id || undefined,
     };
 
-    await saveInterview(interview);
+    if (dsa) {
+      // Interview, submissions and phase snapshots are created atomically.
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await saveInterview(interview, client);
+        await insertDsaReviewRows(client, { interviewId: id, ...dsa });
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    } else {
+      await saveInterview(interview);
+    }
 
     const interviewUrl = `/interview/${id}?token=${token}`;
 
@@ -159,7 +194,7 @@ export async function POST(req: Request) {
       const { rows: tplRows } = await pool.query("SELECT subject, body FROM email_templates WHERE id = $1", [emailTemplateId]);
       if (tplRows.length > 0) {
         const tpl = tplRows[0];
-        const orgName = (session?.user as any)?.orgName || "InterviewAI";
+        const orgName = (session.user as any).orgName || "InterviewAI";
         const firstName = (candidateName || "").split(" ")[0] || "there";
         // Replace template variables
         const subject = tpl.subject
@@ -188,4 +223,76 @@ export async function POST(req: Request) {
     console.error("Failed to create interview:", error);
     return NextResponse.json({ error: "Failed to create interview" }, { status: 500 });
   }
+}
+
+const DSA_REVIEW = "DSA Review";
+
+interface DsaCreateInput {
+  submissions: SubmissionInput[];
+  problem: { id: string; version: number; title: string; runbook: any };
+  puzzles: Array<{ id: string; version: number; title: string; runbook: any }>;
+  plan: PhasePlan;
+}
+
+function jsonField(formData: FormData, name: string): unknown {
+  const raw = formData.get(name);
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return Symbol.for("invalid");
+  }
+}
+
+async function parseDsaInput(formData: FormData, orgId: string, duration: number): Promise<DsaCreateInput | { error: string }> {
+  const primaryProblemId = (formData.get("primaryProblemId") as string) || "";
+  if (!isUuid(primaryProblemId)) return { error: "primaryProblemId is required for a DSA Review interview" };
+
+  const subsRaw = jsonField(formData, "submissions");
+  const puzzleIdsRaw = jsonField(formData, "puzzleIds");
+  const planRaw = jsonField(formData, "plan");
+  if (typeof subsRaw === "symbol" || typeof puzzleIdsRaw === "symbol" || typeof planRaw === "symbol") {
+    return { error: "submissions, puzzleIds and plan must be valid JSON" };
+  }
+
+  const { rows: problemRows } = await pool.query(
+    "SELECT id, title, version, runbook FROM problems WHERE id = $1 AND org_id = $2 AND is_archived = false",
+    [primaryProblemId, orgId]
+  );
+  if (problemRows.length === 0) return { error: "Primary problem not found in your organization" };
+  const problem = problemRows[0];
+
+  // The primary submission is always for the chosen problem; default its title from the problem.
+  const subsInput = Array.isArray(subsRaw)
+    ? subsRaw.map((s: any) => (s && s.isPrimary === true && !String(s.problemTitle || "").trim() ? { ...s, problemTitle: problem.title } : s))
+    : subsRaw;
+  const subs = validateSubmissions(subsInput);
+  if (!subs.ok) return { error: subs.errors[0] };
+
+  // Context submissions may reference a problem, but only one from this org.
+  const refIds = subs.value.filter((s) => !s.isPrimary && s.problemId && isUuid(s.problemId)).map((s) => s.problemId as string);
+  let validRefs: string[] = [];
+  if (refIds.length > 0) {
+    const { rows } = await pool.query("SELECT id FROM problems WHERE id = ANY($1::uuid[]) AND org_id = $2", [refIds, orgId]);
+    validRefs = rows.map((r) => r.id);
+  }
+  const submissions = subs.value.map((s) => (s.isPrimary || (s.problemId && validRefs.indexOf(s.problemId) !== -1) ? s : { ...s, problemId: null }));
+
+  const puzzleIds: string[] = Array.isArray(puzzleIdsRaw) ? Array.from(new Set(puzzleIdsRaw.map(String))) : [];
+  if (puzzleIds.some((p) => !isUuid(p))) return { error: "puzzleIds must be valid ids" };
+  let puzzles: DsaCreateInput["puzzles"] = [];
+  if (puzzleIds.length > 0) {
+    const { rows } = await pool.query(
+      "SELECT id, title, version, runbook FROM puzzles WHERE id = ANY($1::uuid[]) AND org_id = $2 AND is_archived = false",
+      [puzzleIds, orgId]
+    );
+    if (rows.length !== puzzleIds.length) return { error: "One or more puzzles were not found in your organization" };
+    // Keep the interviewer's order (matters for "ordered" selection).
+    puzzles = puzzleIds.map((pid) => rows.find((r) => r.id === pid)!);
+  }
+
+  const plan = validatePlan(planRaw, duration);
+  if (!plan.ok) return { error: plan.errors[0] };
+
+  return { submissions, problem, puzzles, plan: plan.value };
 }

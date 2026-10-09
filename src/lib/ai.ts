@@ -1,5 +1,8 @@
 import type { Interview, TranscriptEntry } from "./store";
 import { DEFAULT_AI_SETTINGS, AISettings, getOrgAISettings } from "./ai-settings";
+import type { PhaseResolution } from "./phase-engine";
+import type { Hint } from "./runbook";
+import { DSA_REVIEW_ROUND, buildDsaReviewMessages, extractInterviewerNotes } from "./prompt/dsa-review";
 
 export function stripThinking(text: string): string {
   // This model (kimi/Open-Thinking) dumps reasoning into content.
@@ -93,7 +96,7 @@ function getDomainGuidance(role: string): string {
   return `You are interviewing for a technical role. Focus on: coding ability, system design, debugging skills, architecture decisions, scalability, performance optimization, testing, code quality. Probe for real production experience.`;
 }
 
-function getLevelCalibration(level: string): string {
+export function getLevelCalibration(level: string): string {
   switch (level.toLowerCase()) {
     case "intern":
     case "fresher":
@@ -157,7 +160,7 @@ function getLevelCalibration(level: string): string {
   }
 }
 
-function extractCandidateName(resume: string): string {
+export function extractCandidateName(resume: string): string {
   if (!resume || resume.length < 10) return "";
   // First line of resume is usually the name
   const firstLine = resume.split("\n").find(l => l.trim().length > 0)?.trim() || "";
@@ -325,7 +328,7 @@ async function callChatAI(
 }
 
 /** Scorecard / summary generation — long-form, uses summary model. */
-async function callSummaryAI(
+export async function callSummaryAI(
   messages: { role: string; content: string }[],
   maxTokens = 5500,
   temperature = 0.3
@@ -343,11 +346,37 @@ async function callJuspayAI(
   return callAI(config, messages, maxTokens, temperature);
 }
 
+/** Server-resolved context for a DSA Review turn (see lib/dsa-turn.ts). */
+export interface DsaTurnContext {
+  resolution: PhaseResolution;
+  unlockedHint: Hint | null;
+  scratchpad: string;
+}
+
 export function buildInterviewPrompt(
   interview: Interview,
   transcript: TranscriptEntry[],
-  settings: AISettings = DEFAULT_AI_SETTINGS
+  settings: AISettings = DEFAULT_AI_SETTINGS,
+  dsa?: DsaTurnContext
 ): { role: string; content: string }[] {
+  if (interview.roundType === DSA_REVIEW_ROUND) {
+    if (!dsa) throw new Error("DSA Review prompts must be built through prepareDsaTurn");
+    return buildDsaReviewMessages({
+      role: interview.role,
+      level: interview.level,
+      duration: interview.duration,
+      candidateName: interview.candidateName || extractCandidateName(interview.resume || ""),
+      levelCalibration: getLevelCalibration(interview.level),
+      interviewerNotes: extractInterviewerNotes(interview.resume || ""),
+      settings,
+      phases: interview.phases || [],
+      submissions: interview.submissions || [],
+      resolution: dsa.resolution,
+      history: transcript,
+      scratchpad: dsa.scratchpad,
+      unlockedHint: dsa.unlockedHint,
+    });
+  }
   // Calculate time remaining
   let timeNote = "";
   if (interview.startedAt) {
@@ -397,12 +426,38 @@ export function buildInterviewPrompt(
   return messages;
 }
 
+/** Chat-model call for a DSA Review turn whose messages were built by prepareDsaTurn. */
+export async function getDsaAIText(messages: { role: string; content: string }[]): Promise<string> {
+  return callChatAI(messages, 700, 0.3);
+}
+
 export async function getAIResponse(
   interview: Interview,
   transcript: TranscriptEntry[]
 ): Promise<string> {
   const settings = await getOrgAISettings((interview as any).orgId);
   return callChatAI(buildInterviewPrompt(interview, transcript, settings), 500, 0.3);
+}
+
+export interface QAPair { q: string; a: string; idx: number }
+
+/** Pairs each interviewer message with the candidate response that immediately followed. */
+export function pairQA(transcript: Pick<TranscriptEntry, "role" | "text">[]): QAPair[] {
+  const pairs: QAPair[] = [];
+  for (let i = 0; i < transcript.length - 1; i++) {
+    const cur = transcript[i];
+    const next = transcript[i + 1];
+    if (cur.role === "ai" && next.role === "candidate") {
+      pairs.push({ q: cur.text, a: next.text, idx: pairs.length + 1 });
+    }
+  }
+  return pairs;
+}
+
+export function formatQAPairs(pairs: QAPair[]): string {
+  return pairs.length > 0
+    ? pairs.map((p) => `--- Pair ${p.idx} ---\nQ: ${p.q}\nA: ${p.a}`).join("\n\n")
+    : "No clear Q-A pairs found.";
 }
 
 export async function generateScorecard(interview: Interview): Promise<string> {
@@ -417,17 +472,7 @@ export async function generateScorecard(interview: Interview): Promise<string> {
 
   // Pair each interviewer message with the candidate response that immediately followed.
   // Lets the AI evaluate each Q→A as a discrete unit instead of scanning a flat transcript.
-  const qaPairs: { q: string; a: string; idx: number }[] = [];
-  for (let i = 0; i < interview.transcript.length - 1; i++) {
-    const cur = interview.transcript[i];
-    const next = interview.transcript[i + 1];
-    if (cur.role === "ai" && next.role === "candidate") {
-      qaPairs.push({ q: cur.text, a: next.text, idx: qaPairs.length + 1 });
-    }
-  }
-  const qaPairsText = qaPairs.length > 0
-    ? qaPairs.map(p => `--- Pair ${p.idx} ---\nQ: ${p.q}\nA: ${p.a}`).join("\n\n")
-    : "No clear Q-A pairs found.";
+  const qaPairsText = formatQAPairs(pairQA(interview.transcript));
 
   const levelBar = getLevelCalibration(interview.level);
   const candidateName = extractCandidateName(interview.resume || "") || "the candidate";
@@ -466,9 +511,13 @@ export async function generateScorecard(interview: Interview): Promise<string> {
     ? `\n## Banned Topics (interviewer was told to avoid)\n${settings.boundaries.bannedTopics.join(", ")}`
     : "";
 
+  const dsaNote = interview.roundType === DSA_REVIEW_ROUND
+    ? `\n\nROUND CONTEXT (DSA Review): this round was a conversation about the candidate's OWN HackerRank submission${(interview.submissions || []).length ? ` (${(interview.submissions || []).filter((s) => s.isPrimary).map((s) => `${s.problemTitle}: ${s.outcome}${s.testsTotal !== null ? `, ${s.testsPassed ?? "?"}/${s.testsTotal} tests` : ""}`).join("; ")})` : ""}, optionally followed by a reasoning puzzle. The candidate did not write code. The AI could give hints from a fixed ladder; hints are scored separately by the system. Score the five dimensions over the whole conversation: technicalDepth = understanding of their own code and complexity, problemSolving = debugging and optimization reasoning, communication = clarity of explanation. Ignore the focus-area coverage rule and cap-at-2 rule for areas that this round does not test.`
+    : "";
+
   const scorecardPrompt = `Senior evaluator scoring ${interview.level} ${interview.role}. Candidate: ${candidateName}.
 ${interviewMeta}.
-STT-transcribed input.
+STT-transcribed input.${dsaNote}
 
 ${levelBar}
 

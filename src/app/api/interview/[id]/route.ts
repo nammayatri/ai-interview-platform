@@ -4,6 +4,7 @@ import { validateAccess } from "@/lib/auth-check";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { pool } from "@/lib/db";
+import { projectInterviewForCandidate } from "@/lib/candidate-projection";
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -48,7 +49,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     return NextResponse.json({ error: "This interview link has expired", expired: true }, { status: 410 });
   }
 
-  return NextResponse.json(interview);
+  // The candidate room always passes ?token=, so anything fetched that way is projected, even when the browser
+  // also holds an interviewer session (e.g. an interviewer previewing the link). Interviewer pages omit the token.
+  const candidateView = !session || !!url.searchParams.get("token");
+  return NextResponse.json(candidateView ? projectInterviewForCandidate(interview) : interview);
 }
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {

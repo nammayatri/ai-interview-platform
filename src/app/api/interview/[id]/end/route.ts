@@ -1,11 +1,7 @@
 import { NextResponse } from "next/server";
 import { getInterview, updateInterview } from "@/lib/store";
-import { generateScorecard } from "@/lib/ai";
-import { startScoring, completeScoring, failScoring } from "@/lib/scoring-tracker";
-import { normalizeScorecard } from "@/lib/normalize-scorecard";
-import { parseScorecardJSON } from "@/lib/parse-scorecard";
-import { calculateOverall, calculateRecommendation } from "@/lib/scorecard-calc";
-import { getOrgAISettings } from "@/lib/ai-settings";
+import { scoreInterviewInBackground } from "@/lib/scoring/background";
+import { closePhasesOnEnd } from "@/lib/phase-store";
 import { validateAccess } from "@/lib/auth-check";
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -40,11 +36,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ error: "Interview already completed" }, { status: 400 });
   }
 
-  // Mark as completed
+  // Mark as completed (DSA Review also closes the active phase and skips pending ones), then score in the background
   await updateInterview(id, {
     status: "completed",
     endedAt: new Date().toISOString(),
   });
+  if (interview.roundType === "DSA Review") await closePhasesOnEnd(id);
 
   // Return immediately — candidate doesn't wait
   const response = NextResponse.json({ ok: true });
@@ -54,7 +51,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     try {
       const freshInterview = await getInterview(id);
       if (freshInterview && freshInterview.transcript.length > 0 && !freshInterview.scorecard) {
-        generateScorecardInBackground(id, freshInterview);
+        scoreInterviewInBackground(id, freshInterview);
       }
     } catch (err) {
       console.error(`[Auto-Score] Failed to fetch interview ${id}:`, err);
@@ -62,58 +59,4 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }, 3000);
 
   return response;
-}
-
-async function generateScorecardInBackground(id: string, interview: any) {
-  // Check if already being scored
-  if (!(await startScoring(id))) return;
-
-  try {
-    console.log(`[Auto-Score] Generating scorecard for interview ${id}...`);
-    const scorecardRaw = await generateScorecard(interview);
-    const parsed = parseScorecardJSON(scorecardRaw);
-
-    // Server-side compute overall + recommendation for deterministic scoring
-    const dimScores = {
-      technicalDepth: parsed.technicalDepth ?? 3,
-      communication: parsed.communication ?? 3,
-      problemSolving: parsed.problemSolving ?? 3,
-      domainKnowledge: parsed.domainKnowledge ?? 3,
-      cultureFit: parsed.cultureFit ?? 3,
-    };
-    const orgSettings = await getOrgAISettings(interview.orgId);
-    parsed.overall = calculateOverall(dimScores, interview.role);
-    parsed.recommendation = calculateRecommendation(parsed.overall, dimScores, orgSettings);
-
-    const scorecard = normalizeScorecard(parsed);
-
-    await updateInterview(id, { scorecard });
-    completeScoring(id);
-    console.log(`[Auto-Score] Scorecard saved for interview ${id}`);
-
-    // Send email notification to interviewer
-    try {
-      const { pool } = await import("@/lib/db");
-      const { sendInterviewComplete } = await import("@/lib/email");
-      const { rows: userRows } = await pool.query(
-        "SELECT u.email, u.name FROM users u JOIN interviews i ON u.id = i.created_by WHERE i.id = $1",
-        [id]
-      );
-      if (userRows.length > 0 && userRows[0].email) {
-        const reviewUrl = `${process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL}/review/${id}`;
-        const candidateLabel = interview.candidateName || interview.candidateEmail || "A candidate";
-        await sendInterviewComplete(
-          userRows[0].email,
-          userRows[0].name || "",
-          candidateLabel,
-          reviewUrl
-        );
-      }
-    } catch (emailErr) {
-      console.error("[Auto-Score] Failed to send notification email:", emailErr);
-    }
-  } catch (err) {
-    failScoring(id, (err as Error).message);
-    console.error(`[Auto-Score] Failed for interview ${id}:`, err);
-  }
 }

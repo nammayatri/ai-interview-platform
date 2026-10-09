@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { DashboardLayout } from "@/components/DashboardLayout";
+import { ReviewPhases } from "@/components/dsa/ReviewPhases";
 
 interface ScoreItem {
   dimension: string;
@@ -42,7 +43,13 @@ interface InterviewData {
     strengths: string[];
     weaknesses: string[];
     evidence: Evidence[];
+    phases?: any[];
+    dimensionSources?: Record<string, "rubric" | "global">;
   } | null;
+  roundType?: string;
+  phases?: any[];
+  submissions?: any[];
+  scratchpad?: string;
   proctoring: ProctoringEvent[];
   transcript: TranscriptMessage[];
 }
@@ -346,6 +353,17 @@ export default function ReviewPage() {
             ))}
           </div>
         </div>
+
+        {/* DSA Review: phases, rubric results, code, scratchpad (not part of share links) */}
+        {!isShareMode && (data.roundType === "DSA Review" || scorecard.phases) && (
+          <ReviewPhases
+            phases={scorecard.phases}
+            dimensionSources={scorecard.dimensionSources}
+            interviewPhases={data.phases}
+            submissions={data.submissions}
+            scratchpad={data.scratchpad}
+          />
+        )}
 
         {/* Assessment Summary */}
         <div className="card p-6 space-y-5 animate-fade-in-up delay-2">
