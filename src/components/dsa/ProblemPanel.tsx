@@ -50,7 +50,7 @@ export function ProblemPanel({ title, statementMd, submission }: { title: string
       </div>
       {!collapsed && (
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4 pt-2">
-          <div className="max-h-[40%] shrink-0 overflow-y-auto pr-1 lg:max-h-[45%]">
+          <div className={submission ? "max-h-[40%] shrink-0 overflow-y-auto pr-1 lg:max-h-[45%]" : "min-h-0 flex-1 overflow-y-auto pr-1"}>
             <Markdown dark>{statementMd}</Markdown>
           </div>
           {submission && (

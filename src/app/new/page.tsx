@@ -4,18 +4,24 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import {
-  DsaReviewSection,
-  dsaFormError,
-  dsaFormFields,
-  emptyDsaForm,
-  type DsaFormState,
-  type ProblemOption,
-  type PuzzleOption,
-} from "@/components/dsa/DsaReviewSection";
+  StageBuilder,
+  computeDuration,
+  emptyStagesForm,
+  stagesFormError,
+  stagesFormFields,
+  type ItemOption,
+  type RunbookOption,
+  type StagesForm,
+} from "@/components/dsa/StageBuilder";
 
 const LEVELS = ["Intern", "Junior", "Mid", "Senior", "Staff", "Principal", "Manager", "Director"];
 const DURATIONS = [10, 15, 20, 30, 45, 60, 90, 120];
-const ROUND_TYPES = ["General", "Technical", "Behavioral", "System Design", "Coding", "HR", "Culture Fit", "Managerial", "Case Study", "Puzzle", "DSA Review"];
+// "DSA Review" is the stored round type of the staged coding evaluation (Part A / DSA / Puzzle).
+const CODING_ROUND = "DSA Review";
+const ROUND_TYPES: { value: string; label: string }[] = [
+  { value: CODING_ROUND, label: "Coding Evaluation (Part A · DSA · Puzzle)" },
+  ...["General", "Technical", "Behavioral", "System Design", "Coding", "HR", "Culture Fit", "Managerial", "Case Study", "Puzzle"].map((v) => ({ value: v, label: v })),
+];
 const CODING_LANGUAGES = ["JavaScript", "TypeScript", "Python", "Java", "C++", "Go", "Rust", "Haskell", "Kotlin", "Swift", "Ruby", "C#", "Scala", "SQL", "PHP"];
 const FOCUS_AREAS = [
   "Technical Skills", "Behavioral", "System Design", "Problem Solving",
@@ -24,14 +30,6 @@ const FOCUS_AREAS = [
   "Culture Fit", "Stakeholder Management", "Project Management",
 ];
 
-interface QuestionBank {
-  id: number;
-  name: string;
-  role: string;
-  level: string;
-  round_type: string;
-  questions: string[];
-}
 
 function SectionHeader({ step, title, subtitle }: { step: number; title: string; subtitle: string }) {
   return (
@@ -53,7 +51,7 @@ export default function NewInterviewPage() {
   const [role, setRole] = useState("");
   const [level, setLevel] = useState("Senior");
   const [duration, setDuration] = useState(30);
-  const [roundType, setRoundType] = useState("General");
+  const [roundType, setRoundType] = useState(CODING_ROUND);
   const [codingLanguage, setCodingLanguage] = useState("JavaScript");
   const [focusAreas, setFocusAreas] = useState<string[]>(["Technical Skills"]);
   const [additionalContext, setAdditionalContext] = useState("");
@@ -63,28 +61,27 @@ export default function NewInterviewPage() {
   const [interviewLink, setInterviewLink] = useState(""); // single link (backward compat)
   const [bulkResults, setBulkResults] = useState<{ email: string; link: string; error?: string }[]>([]);
   const [copied, setCopied] = useState(false);
-  const [questionBanks, setQuestionBanks] = useState<QuestionBank[]>([]);
-  const [selectedBankId, setSelectedBankId] = useState<string>("");
   const [emailTemplates, setEmailTemplates] = useState<{ id: string; name: string; subject: string; description: string }[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [dsa, setDsa] = useState<DsaFormState>(emptyDsaForm());
-  const [problems, setProblems] = useState<ProblemOption[]>([]);
-  const [puzzles, setPuzzles] = useState<PuzzleOption[]>([]);
-  const isDsa = roundType === "DSA Review";
+  const [stages, setStages] = useState<StagesForm>(emptyStagesForm());
+  const [partaQuestions, setPartaQuestions] = useState<ItemOption[]>([]);
+  const [dsaProblems, setDsaProblems] = useState<ItemOption[]>([]);
+  const [puzzles, setPuzzles] = useState<ItemOption[]>([]);
+  const [runbooks, setRunbooks] = useState<RunbookOption[]>([]);
+  const isDsa = roundType === CODING_ROUND;
   const role_ = (session?.user as any)?.role as string | undefined;
   const canCreate = !role_ || role_ === "admin" || role_ === "interviewer";
 
   useEffect(() => {
-    fetch("/api/problems").then((r) => r.json()).then((d) => { if (Array.isArray(d)) setProblems(d); }).catch(() => {});
-    fetch("/api/puzzles").then((r) => r.json()).then((d) => { if (Array.isArray(d)) setPuzzles(d); }).catch(() => {});
+    const load = (url: string, set: (d: any[]) => void) => fetch(url).then((r) => r.json()).then((d) => { if (Array.isArray(d)) set(d); }).catch(() => {});
+    load("/api/problems?kind=parta", setPartaQuestions);
+    load("/api/problems?kind=dsa", setDsaProblems);
+    load("/api/puzzles", setPuzzles);
+    load("/api/runbooks", setRunbooks);
   }, []);
 
   useEffect(() => {
-    fetch("/api/questions")
-      .then((r) => r.json())
-      .then((data) => { if (Array.isArray(data)) setQuestionBanks(data); })
-      .catch(() => {});
     fetch("/api/email-templates")
       .then((r) => r.json())
       .then((data) => {
@@ -118,13 +115,15 @@ export default function NewInterviewPage() {
 
   // DSA Review: each candidate has their own submission, so bulk creation is not offered.
   const validCandidates = (isDsa ? candidates.slice(0, 1) : candidates).filter(c => c.email.trim() && c.email.includes("@"));
-  const hasContext = isDsa || file || additionalContext.trim().length > 0 || selectedBankId;
-  const dsaError = isDsa ? dsaFormError(dsa, duration) : null;
+  const hasContext = isDsa || file || additionalContext.trim().length > 0;
+  const dsaError = isDsa ? stagesFormError(stages) : null;
+  // In the coding evaluation the stage times decide the total time.
+  const effectiveDuration = isDsa ? computeDuration(stages) : duration;
   const canSubmit = role && validCandidates.length > 0 && hasContext && !dsaError && !submitting;
 
   const appendDsaFields = (formData: FormData) => {
     if (!isDsa) return;
-    Object.entries(dsaFormFields(dsa, problems)).forEach(([k, v]) => formData.append(k, v));
+    Object.entries(stagesFormFields(stages)).forEach(([k, v]) => formData.append(k, v));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -144,11 +143,10 @@ export default function NewInterviewPage() {
         if (c.phone.trim()) formData.append("candidatePhone", c.phone.trim());
         formData.append("role", role);
         formData.append("level", level);
-        formData.append("duration", String(duration));
+        formData.append("duration", String(effectiveDuration));
         formData.append("focusAreas", focusAreas.join(","));
         formData.append("roundType", roundType);
         if (roundType === "Coding") formData.append("language", codingLanguage);
-        if (selectedBankId) formData.append("questionBankId", selectedBankId);
         if (additionalContext.trim()) formData.append("additionalContext", additionalContext.trim());
         if (selectedTemplateId) formData.append("emailTemplateId", selectedTemplateId);
         if (file) formData.append("resume", file);
@@ -174,12 +172,11 @@ export default function NewInterviewPage() {
             if (c.phone.trim()) formData.append("candidatePhone", c.phone.trim());
             formData.append("role", role);
             formData.append("level", level);
-            formData.append("duration", String(duration));
+            formData.append("duration", String(effectiveDuration));
             formData.append("focusAreas", focusAreas.join(","));
             formData.append("roundType", roundType);
             if (roundType === "Coding") formData.append("language", codingLanguage);
-            if (selectedBankId) formData.append("questionBankId", selectedBankId);
-            if (additionalContext.trim()) formData.append("additionalContext", additionalContext.trim());
+                if (additionalContext.trim()) formData.append("additionalContext", additionalContext.trim());
             if (selectedTemplateId) formData.append("emailTemplateId", selectedTemplateId);
             if (file) formData.append("resume", file);
 
@@ -294,7 +291,7 @@ export default function NewInterviewPage() {
                   >
                     Copy All Links
                   </button>
-                  <button onClick={() => { setInterviewLink(""); setBulkResults([]); setFile(null); setRole(""); setCandidates([{email:"",name:"",phone:""}]); setAdditionalContext(""); setSelectedBankId(""); setSelectedTemplateId(""); setDsa(emptyDsaForm()); }}
+                  <button onClick={() => { setInterviewLink(""); setBulkResults([]); setFile(null); setRole(""); setCandidates([{email:"",name:"",phone:""}]); setAdditionalContext(""); setSelectedTemplateId(""); setStages(emptyStagesForm()); }}
                     className="btn-primary flex-1">
                     Create More
                   </button>
@@ -331,7 +328,7 @@ export default function NewInterviewPage() {
               <p className="text-xs text-gray-400 text-center">No email template was selected — share the link manually.</p>
             )}
             <div className="flex gap-3">
-              <button onClick={() => { setInterviewLink(""); setBulkResults([]); setFile(null); setRole(""); setCandidates([{email:"",name:"",phone:""}]); setAdditionalContext(""); setSelectedBankId(""); setSelectedTemplateId(""); setDsa(emptyDsaForm()); }} className="btn-primary flex-1">
+              <button onClick={() => { setInterviewLink(""); setBulkResults([]); setFile(null); setRole(""); setCandidates([{email:"",name:"",phone:""}]); setAdditionalContext(""); setSelectedTemplateId(""); setStages(emptyStagesForm()); }} className="btn-primary flex-1">
                 Create Another
               </button>
               <button
@@ -381,7 +378,7 @@ export default function NewInterviewPage() {
                     </div>
                   </div>
                 ))}
-                {isDsa && <p className="text-xs text-gray-500">DSA Review is created one candidate at a time, because each candidate has a different submission.</p>}
+                {isDsa && <p className="text-xs text-gray-500">The coding evaluation is created one candidate at a time, because each candidate has a different submission.</p>}
                 {!isDsa && <button type="button" onClick={addCandidate}
                   className="flex items-center gap-2 text-sm text-indigo-600 hover:text-indigo-800 transition">
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -471,6 +468,9 @@ export default function NewInterviewPage() {
                   </div>
                   <div>
                     <label className="label">Duration</label>
+                    {isDsa ? (
+                      <p className="input-field !bg-gray-50 text-gray-700">{effectiveDuration} min <span className="text-xs text-gray-400">(from the stages)</span></p>
+                    ) : (
                     <div className="flex gap-2">
                       <select
                         value={DURATIONS.includes(duration) ? duration : "custom"}
@@ -495,11 +495,12 @@ export default function NewInterviewPage() {
                         />
                       )}
                     </div>
+                    )}
                   </div>
                   <div>
                     <label className="label">Round</label>
                     <select value={roundType} onChange={(e) => setRoundType(e.target.value)} className="input-field">
-                      {ROUND_TYPES.map((rt) => <option key={rt} value={rt}>{rt}</option>)}
+                      {ROUND_TYPES.map((rt) => <option key={rt.value} value={rt.value}>{rt.label}</option>)}
                     </select>
                   </div>
                   {roundType === "Coding" && (
@@ -512,6 +513,8 @@ export default function NewInterviewPage() {
                   )}
                 </div>
 
+                {!isDsa && (
+                <>
                 {/* Focus Areas */}
                 <div>
                   <label className="label">Focus Areas</label>
@@ -532,45 +535,19 @@ export default function NewInterviewPage() {
                     ))}
                   </div>
                 </div>
+                </>
+                )}
               </div>
             </div>
 
             {isDsa && (
-              <DsaReviewSection state={dsa} onChange={setDsa} problems={problems} puzzles={puzzles} duration={duration} startStep={3} />
+              <StageBuilder form={stages} onChange={setStages} partaQuestions={partaQuestions} dsaProblems={dsaProblems} puzzles={puzzles} runbooks={runbooks} startStep={3} />
             )}
 
             {/* Section 3: Context & Questions */}
             <div className="card p-6 animate-fade-in-up delay-2 border-l-4 border-l-emerald-500">
-              <SectionHeader step={isDsa ? 4 : 3} title={isDsa ? "Interviewer Notes" : "Interview Context"} subtitle={isDsa ? "Optional notes for the AI interviewer. The resume is optional and is only used for scoring context." : "Provide context so the AI asks better questions. At least one of resume, context, or question bank is required."} />
+              <SectionHeader step={isDsa ? 4 : 3} title={isDsa ? "Interviewer Notes" : "Interview Context"} subtitle={isDsa ? "Optional notes for the AI interviewer. The resume is optional and is only used for scoring context." : "Provide context so the AI asks better questions. At least one of resume or notes is required."} />
               <div className="space-y-4">
-                {/* Question Bank */}
-                {questionBanks.length > 0 && !isDsa && (
-                  <div>
-                    <label className="label">
-                      Question Bank <span className="text-gray-400 font-normal">(optional)</span>
-                    </label>
-                    <select value={selectedBankId} onChange={(e) => setSelectedBankId(e.target.value)} className="input-field">
-                      <option value="">None — AI will generate questions</option>
-                      {questionBanks.map((bank) => (
-                        <option key={bank.id} value={String(bank.id)}>
-                          {bank.name} ({bank.round_type} &middot; {Array.isArray(bank.questions) ? bank.questions.length : 0}q)
-                        </option>
-                      ))}
-                    </select>
-                    {selectedBankId && (() => {
-                      const bank = questionBanks.find((b) => String(b.id) === selectedBankId);
-                      const qs = bank && Array.isArray(bank.questions) ? bank.questions : [];
-                      return qs.length > 0 ? (
-                        <div className="mt-2 space-y-1 max-h-[100px] overflow-y-auto rounded-lg border border-gray-100 p-2 bg-gray-50">
-                          {qs.map((q, i) => (
-                            <p key={i} className="text-xs text-gray-600 whitespace-pre-line">{i + 1}. {q}</p>
-                          ))}
-                        </div>
-                      ) : null;
-                    })()}
-                  </div>
-                )}
-
                 {/* Additional Context */}
                 <div>
                   <label className="label">
@@ -608,7 +585,7 @@ export default function NewInterviewPage() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
                     </svg>
                     <p className="text-xs text-amber-700">
-                      Please provide at least one: a resume, additional notes, or select a question bank. This helps the AI ask relevant questions.
+                      Please provide at least one: a resume or additional notes. This helps the AI ask relevant questions.
                     </p>
                   </div>
                 )}
@@ -633,7 +610,7 @@ export default function NewInterviewPage() {
               </button>
               {!hasContext && (
                 <p className="text-xs text-center text-gray-400 mt-2">
-                  Upload a resume, add notes, or select a question bank to enable
+                  Upload a resume or add notes to enable
                 </p>
               )}
             </div>

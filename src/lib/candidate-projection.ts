@@ -3,7 +3,8 @@
 // weak-answer counts, hints used) stays on the server.
 import type { PhaseRow } from "./phase-engine";
 import type { Submission } from "./phase-store";
-import type { DsaPhaseConfig, PuzzlePhaseConfig } from "./runbook";
+import { phaseMaterial } from "./phase-config";
+import type { PartAPhaseConfig } from "./runbook";
 
 export interface CandidatePhase {
   phaseKey: string;
@@ -11,8 +12,10 @@ export interface CandidatePhase {
   budgetMin: number | null;
   startedAt: string | null;
   endedAt: string | null;
+  /** parta only */
   problemTitle?: string;
   runbook?: { statementMd: string };
+  /** dsa / puzzle: only once the stage is active (the random pick is not revealed earlier) */
   selected?: { title: string; runbook: { statementMd: string } };
 }
 
@@ -24,13 +27,13 @@ export function projectPhaseForCandidate(p: PhaseRow): CandidatePhase {
     startedAt: p.startedAt,
     endedAt: p.endedAt,
   };
-  if (p.phaseKey === "dsa") {
-    const cfg = p.config as DsaPhaseConfig;
+  if (p.phaseKey === "parta") {
+    const cfg = p.config as PartAPhaseConfig;
     out.problemTitle = cfg.problemTitle;
     out.runbook = { statementMd: cfg.runbook.statementMd };
-  } else if (p.phaseKey === "puzzle" && p.status === "active") {
-    const sel = (p.config as PuzzlePhaseConfig).selected;
-    if (sel) out.selected = { title: sel.title, runbook: { statementMd: sel.runbook.statementMd } };
+  } else if (p.status === "active") {
+    const m = phaseMaterial(p);
+    if (m.ready) out.selected = { title: m.title, runbook: { statementMd: m.statementMd } };
   }
   return out;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validatePlan, validateProblemRunbook, validatePuzzleRunbook, validateSubmissions, LIMITS } from "../runbook";
+import { validateInterviewRunbook, validateProblemRunbook, validatePuzzleRunbook, validateStages, validateSubmissions, BUILTIN_RUNBOOKS, LIMITS } from "../runbook";
 import { problemRunbook, puzzleRunbook } from "./fixtures";
 
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
@@ -72,16 +72,66 @@ describe("validateSubmissions", () => {
   it("rejects tests passed above total", () => expect(errs(validateSubmissions([{ ...sub, testsPassed: 9, testsTotal: 5 }]))).toMatch(/testsPassed/));
 });
 
-describe("validatePlan", () => {
-  const plan = { dsaBudgetMin: 15, graceMin: 2, earlyDoneAfterMin: 8, puzzleMinRemainingMin: 5, puzzleSelection: "random" };
-  it("accepts a plan that fits the duration with the closing reserve", () => expect(validatePlan(plan, 30).ok).toBe(true));
-  it("rejects budget + grace + reserve beyond the duration", () => {
-    expect(validatePlan({ ...plan, dsaBudgetMin: 27 }, 30).ok).toBe(false); // 27 + 2 + 2 = 31
-    expect(validatePlan({ ...plan, dsaBudgetMin: 26 }, 30).ok).toBe(true); // 26 + 2 + 2 = 30
+const ID = "11111111-1111-1111-1111-111111111111";
+const stage = (over: any = {}) => ({ key: "parta", budgetMin: 15, graceMin: 2, earlyDoneAfterMin: 8, itemId: ID, ...over });
+
+describe("validateStages", () => {
+  const three = [stage(), stage({ key: "dsa", mode: "random", itemId: null }), stage({ key: "puzzle", mode: "specific", earlyDoneAfterMin: null, budgetMin: 8, graceMin: 0 })];
+  it("accepts a full plan and keeps the order", () => {
+    const r = validateStages(three, 60);
+    expect(r.ok && r.value.map((s) => s.key)).toEqual(["parta", "dsa", "puzzle"]);
   });
-  it("rejects early-done after the budget", () => expect(validatePlan({ ...plan, earlyDoneAfterMin: 20 }, 60).ok).toBe(false));
-  it("defaults phase weights to 0.7 / 0.3", () => {
-    const r = validatePlan(plan, 30);
-    expect(r.ok && r.value.phaseWeights).toEqual({ dsa: 0.7, puzzle: 0.3 });
+  it("accepts any subset and any order", () => {
+    const r = validateStages([stage({ key: "puzzle", mode: "random", itemId: null }), stage({ key: "dsa", mode: "random", itemId: null })], 40);
+    expect(r.ok && r.value.map((s) => s.key)).toEqual(["puzzle", "dsa"]);
+  });
+  it("requires at least one stage", () => expect(validateStages([], 30).ok).toBe(false));
+  it("rejects a duplicate stage", () => expect(errs(validateStages([stage(), stage()], 60))).toMatch(/twice/));
+  it("requires an item when not random, and always for Part A", () => {
+    expect(errs(validateStages([stage({ key: "dsa", mode: "specific", itemId: null })], 60))).toMatch(/pick/);
+    expect(errs(validateStages([stage({ itemId: null })], 60))).toMatch(/Part A question/);
+  });
+  it("forces Part A to be specific even if random is sent", () => {
+    const r = validateStages([stage({ mode: "random" })], 60);
+    expect(r.ok && r.value[0].mode).toBe("specific");
+  });
+  it("requires the stage times plus the 2 minute reserve to fit the duration", () => {
+    expect(validateStages([stage({ budgetMin: 28 })], 30).ok).toBe(true);
+    expect(validateStages([stage({ budgetMin: 29 })], 30).ok).toBe(false);
+    expect(errs(validateStages(three, 30))).toMatch(/add up to 38/);
+  });
+  it("rejects early-done beyond the stage time and bad numbers", () => {
+    expect(errs(validateStages([stage({ earlyDoneAfterMin: 20 })], 60))).toMatch(/early/);
+    expect(errs(validateStages([stage({ budgetMin: 0 })], 60))).toMatch(/at least 1/);
+  });
+  it("carries the chosen runbook and rejects a malformed id", () => {
+    const r = validateStages([stage({ runbookId: ID })], 60);
+    expect(r.ok && r.value[0].runbookId).toBe(ID);
+    expect(validateStages([stage({ runbookId: "nope" })], 60).ok).toBe(false);
+    const d = validateStages([stage()], 60);
+    expect(d.ok && d.value[0].runbookId).toBeNull();
+  });
+});
+
+describe("validateInterviewRunbook", () => {
+  const good = { name: "Strict drill", instructions: "1. Ask each function's complexity.", probes: ["q1", " "], rubric: [{ id: "a", text: "t", weight: 1, mapsTo: "technicalDepth" }] };
+  it("accepts a runbook and trims empty probes", () => {
+    const r = validateInterviewRunbook(good);
+    expect(r.ok && r.value.probes).toEqual(["q1"]);
+  });
+  it("requires a name and instructions", () => {
+    expect(errs(validateInterviewRunbook({ ...good, name: " " }))).toMatch(/name/);
+    expect(errs(validateInterviewRunbook({ ...good, instructions: "" }))).toMatch(/instructions/);
+  });
+  it("validates extra rubric criteria", () => {
+    expect(errs(validateInterviewRunbook({ ...good, rubric: [{ id: "a", text: "t", weight: 0, mapsTo: "technicalDepth" }] }))).toMatch(/weight/);
+  });
+  it("allows no extra probes or rubric", () => expect(validateInterviewRunbook({ name: "n", instructions: "i" }).ok).toBe(true));
+  it("ships a valid built-in runbook for every stage", () => {
+    (["parta", "dsa", "puzzle"] as const).forEach((k) => expect(validateInterviewRunbook(BUILTIN_RUNBOOKS[k]).ok).toBe(true));
+  });
+  it("the built-in Part A flow asks function-by-function complexity and pseudocode when not optimized", () => {
+    expect(BUILTIN_RUNBOOKS.parta.instructions).toMatch(/FUNCTION BY FUNCTION/);
+    expect(BUILTIN_RUNBOOKS.parta.instructions).toMatch(/pseudocode/);
   });
 });

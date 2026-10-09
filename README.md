@@ -308,15 +308,19 @@ MIT
   <img src="https://readme-typing-svg.demolab.com?font=Inter&weight=500&size=14&duration=3000&pause=1000&color=9CA3AF&center=true&vCenter=true&random=false&width=400&height=25&lines=Built+with+Next.js+%2B+TypeScript+%2B+PostgreSQL;Open+source+%7C+MIT+License;Star+%E2%AD%90+if+you+find+this+useful!" alt="Footer" />
 </p>
 
-## DSA Review round
+## Coding evaluation (Part A · DSA · Puzzle)
 
-A round type where the AI discusses a candidate's own HackerRank submission by voice, then optionally a puzzle.
-Run `migrations/003_dsa_review.sql` (after 001 and 002) to enable it.
+A staged round. Pick **Coding Evaluation** as the round when creating an interview, turn stages on or off, reorder them, and give each its own time:
 
-- **Roles**: admins author question banks, problems and puzzles; interviewers and admins create interviews; members are read-only.
-  Assign roles on the Team page (existing members cannot create interviews until promoted to interviewer).
-- **Authoring**: `/problems` and `/puzzles`. Each has a structured runbook (solution tracks, probes, hint ladder, rubric). Use "Paste runbook JSON" in the editor; examples in `docs/examples/`.
-- **Creating**: `/new` > Round > DSA Review. Attach the HackerRank submission, pick a puzzle pool and the phase plan.
-- **How it runs**: the server owns the phases (`src/lib/phase-engine.ts`, `phase-store.ts`). The AI only sees the current phase's material and at most one unlocked hint, and tags turns with `[ASSESS:...]`, `[HINT:n]`, `[PHASE_DONE]`, which the server parses and strips (`src/lib/dsa-turn.ts`).
-- **Scoring**: per-phase rubric credits are rolled up deterministically into the five dimensions (`src/lib/scoring/`).
+1. **Part A**: the candidate's own, already written solution. You pick a Part A question and paste their code; the AI goes through it function by function, asks the complexity of each, checks correctness, and asks for an optimized approach (pseudocode) if it is not optimal.
+2. **DSA**: a fresh problem, either one you pick or a random one from all DSA problems. The AI asks for the approach, then the candidate types the code in the scratchpad.
+3. **Puzzle**: one you pick, or random from all.
+
+Run `migrations/003_dsa_review.sql` then `migrations/004_stages_and_runbooks.sql` (as the table owner; the `*b_grants_sandbox.sql` files grant the new tables to the sandbox app role).
+
+- **Content** (sidebar): *Part A Questions*, *DSA Problems*, *Puzzles*. Each holds the statement, reference solutions (best last), hints and a rubric. "Paste runbook JSON" works in each editor; examples in `docs/examples/`.
+- **Runbooks** (sidebar): reusable "how the AI asks" instructions per stage type. Create as many as you like; the built-in defaults can be duplicated. Pick one per stage when creating an interview; it is copied into the interview, so later edits don't change interviews already created.
+- **Roles**: admins author content and runbooks; interviewers and admins create interviews; members are read-only (set roles on the Team page).
+- **How it runs**: the server owns the stages (`src/lib/phase-engine.ts`, `phase-store.ts`). The AI only sees the current stage's material and at most one unlocked hint, and tags turns with `[ASSESS:...]`, `[HINT:n]`, `[PHASE_DONE]`, which the server parses and strips (`src/lib/dsa-turn.ts`). Each stage keeps its own scratchpad.
+- **Scoring**: per-stage rubric credits (the item's rubric plus the runbook's extra criteria) roll up deterministically into the five dimensions (`src/lib/scoring/`).
 - **Tests**: `npm test`.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { describePhase, normalizePhaseScorecard } from "../scoring/phase-scoring";
-import { phase, problemRunbook } from "./fixtures";
+import { customFlow, partaConfig, phase, problemRunbook } from "./fixtures";
 
 describe("normalizePhaseScorecard", () => {
   it("keeps valid credits, drops unknown ids and counts missing criteria as missed", () => {
@@ -41,5 +41,14 @@ describe("describePhase", () => {
     const d = describePhase(phase({ status: "completed" }), { skipped: true, reason: "Only 1 candidate response(s) in this phase" });
     expect(d).toMatchObject({ status: "skipped", score: null });
     expect(d.skipReason).toMatch(/Only 1/);
+  });
+});
+
+describe("runbook criteria in scoring", () => {
+  it("adds the plugged-in runbook's extra criteria (prefixed rb:) to the item's rubric", () => {
+    const p = phase({ status: "completed", endedAt: "2026-01-01T10:12:00.000Z", config: { ...partaConfig, flow: customFlow } });
+    const d = describePhase(p, { criteria: [{ id: "bottleneck", credit: "met", evidence: "" }, { id: "complexity", credit: "met", evidence: "" }, { id: "rb:every_fn", credit: "partial", evidence: "x" }], notes: "" });
+    expect(d.criteria.map((c) => c.id)).toEqual(["bottleneck", "complexity", "rb:every_fn"]);
+    expect(d.criteria[2]).toMatchObject({ credit: "partial", mapsTo: "technicalDepth" });
   });
 });

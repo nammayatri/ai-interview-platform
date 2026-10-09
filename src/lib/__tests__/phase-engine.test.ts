@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  decideMarkers, nextUnlockedHint, parseMarkers, resolvePhase, sanitizeCandidateText, selectPuzzle, stripMarkers,
+  decideMarkers, nextUnlockedHint, parseMarkers, resolvePhase, sanitizeCandidateText, selectDsaProblem, selectPuzzle, stripMarkers,
 } from "../phase-engine";
 import type { PoolEntry } from "../runbook";
 import { hints, phase, puzzleRunbook } from "./fixtures";
@@ -66,6 +66,9 @@ describe("selectPuzzle", () => {
   it("ordered mode picks the first that fits", () => expect(selectPuzzle(pool, 5, "x", "ordered")!.puzzleId).toBe("a"));
   it("falls back to the shortest within three minutes of the remaining time", () => {
     expect(selectPuzzle(pool, 2, "x")!.puzzleId).toBe("a"); // shortest is 4 min, within 2 + 3
+  });
+  it("a specific puzzle always runs, even when it does not fit the time", () => {
+    expect(selectPuzzle([entry("long", 30)], 2, "x", "specific")!.puzzleId).toBe("long");
   });
   it("returns null when even the shortest is too long", () => expect(selectPuzzle(pool, 0.5, "x")).toBeNull());
   it("returns null for an empty pool", () => expect(selectPuzzle([], 30, "x")).toBeNull());
@@ -138,4 +141,15 @@ describe("decideMarkers", () => {
     expect(decideMarkers(parseMarkers("x"), base).missingAssess).toBe(true);
     expect(decideMarkers(parseMarkers("x"), { ...base, expectAssess: false }).missingAssess).toBe(false);
   });
+});
+
+describe("selectDsaProblem", () => {
+  const e = (id: string) => ({ problemId: id, version: 1, title: id, runbook: {} as any });
+  const pool = [e("a"), e("b"), e("c"), e("d")];
+  it("specific returns the single chosen problem", () => expect(selectDsaProblem([e("only")], "s", "specific")!.problemId).toBe("only"));
+  it("random is deterministic per seed and spreads across seeds", () => {
+    expect(selectDsaProblem(pool, "i1:dsa", "random")!.problemId).toBe(selectDsaProblem(pool, "i1:dsa", "random")!.problemId);
+    expect(new Set(Array.from({ length: 60 }, (_, i) => selectDsaProblem(pool, `s${i}:dsa`, "random")!.problemId)).size).toBeGreaterThan(2);
+  });
+  it("returns null for an empty pool", () => expect(selectDsaProblem([], "s", "random")).toBeNull());
 });

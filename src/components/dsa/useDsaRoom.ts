@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface CandidatePhase {
-  phaseKey: "dsa" | "puzzle";
+  phaseKey: "parta" | "dsa" | "puzzle";
   status: "pending" | "active" | "completed" | "skipped";
   budgetMin: number | null;
   startedAt: string | null;
@@ -25,14 +25,14 @@ export interface CandidateSubmission {
 }
 
 export interface PhaseSnapshot {
-  key: "dsa" | "puzzle" | null;
+  key: "parta" | "dsa" | "puzzle" | null;
   elapsedMin: number;
   budgetMin: number;
   at: number; // client time the snapshot was taken
 }
 
 export interface PhaseInfoFromServer {
-  key: "dsa" | "puzzle" | null;
+  key: "parta" | "dsa" | "puzzle" | null;
   status: string;
   elapsedMin: number;
   budgetMin: number;
@@ -40,8 +40,8 @@ export interface PhaseInfoFromServer {
 }
 
 export interface PhaseTransitionFromServer {
-  from: "dsa" | "puzzle";
-  to: "dsa" | "puzzle" | null;
+  from: "parta" | "dsa" | "puzzle";
+  to: "parta" | "dsa" | "puzzle" | null;
   reason: string;
   /** true when the turn that carried this transition already was the new phase's opening turn */
   opened: boolean;
@@ -73,6 +73,11 @@ export function useDsaRoom({ interviewId, tokenRef, enabled }: { interviewId: st
       setScratchpadState(interview.scratchpad);
     }
     const active = ph.find((p) => p.status === "active") || null;
+    // A new stage starts with an empty scratchpad (the server resets it too).
+    if (activeKeyRef.current && active && activeKeyRef.current !== active.phaseKey) {
+      scratchpadRef.current = "";
+      setScratchpadState("");
+    }
     activeKeyRef.current = active ? active.phaseKey : null;
     if (active && active.startedAt && active.budgetMin !== null) {
       setSnapshot({ key: active.phaseKey, elapsedMin: (Date.now() - new Date(active.startedAt).getTime()) / 60000, budgetMin: active.budgetMin, at: Date.now() });
@@ -94,6 +99,10 @@ export function useDsaRoom({ interviewId, tokenRef, enabled }: { interviewId: st
 
   const applyServerPhase = useCallback((info: PhaseInfoFromServer | undefined) => {
     if (!info) return;
+    if (activeKeyRef.current && info.key && activeKeyRef.current !== info.key) {
+      scratchpadRef.current = "";
+      setScratchpadState("");
+    }
     activeKeyRef.current = info.key;
     setSnapshot(info.key ? { key: info.key, elapsedMin: info.elapsedMin, budgetMin: info.budgetMin, at: Date.now() } : null);
   }, []);
@@ -106,10 +115,9 @@ export function useDsaRoom({ interviewId, tokenRef, enabled }: { interviewId: st
   }, [enabled]);
 
   const active = phases.find((p) => p.status === "active") || null;
-  const dsaPhase = phases.find((p) => p.phaseKey === "dsa") || null;
   const phaseRemainingSec = snapshot && snapshot.budgetMin > 0
     ? Math.max(0, Math.round(snapshot.budgetMin * 60 - (snapshot.elapsedMin * 60 + (Date.now() - snapshot.at) / 1000)))
     : null;
 
-  return { phases, submissions, snapshot, active, dsaPhase, phaseRemainingSec, scratchpad, scratchpadRef, setScratchpad, load, refresh, applyServerPhase, activeKeyRef, pollMs: POLL_MS };
+  return { phases, submissions, snapshot, active, phaseRemainingSec, scratchpad, scratchpadRef, setScratchpad, load, refresh, applyServerPhase, activeKeyRef, pollMs: POLL_MS };
 }

@@ -3,9 +3,9 @@
 const fmt = (sec: number) => `${Math.floor(sec / 60).toString().padStart(2, "0")}:${(sec % 60).toString().padStart(2, "0")}`;
 
 export function PhaseHeader({ phaseKey, title, phaseRemainingSec, totalRemainingSec }: {
-  phaseKey: "dsa" | "puzzle" | null; title: string; phaseRemainingSec: number | null; totalRemainingSec: number;
+  phaseKey: "parta" | "dsa" | "puzzle" | null; title: string; phaseRemainingSec: number | null; totalRemainingSec: number;
 }) {
-  const label = phaseKey === "dsa" ? "Part 1 · Your solution" : phaseKey === "puzzle" ? "Part 2 · Puzzle" : "Wrapping up";
+  const label = phaseKey === "parta" ? "Part A · Your solution" : phaseKey === "dsa" ? "DSA · Solve a problem" : phaseKey === "puzzle" ? "Puzzle" : "Wrapping up";
   return (
     <div className="glass flex items-center justify-between gap-3 rounded-xl px-4 py-2" aria-live="off">
       <div className="min-w-0">

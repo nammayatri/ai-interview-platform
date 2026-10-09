@@ -2,12 +2,19 @@ import { NextResponse } from "next/server";
 import { randomUUID, randomBytes } from "crypto";
 import { saveInterview, Interview } from "@/lib/store";
 import { requireRole } from "@/lib/rbac";
-import { insertDsaReviewRows } from "@/lib/phase-store";
+import { insertPhaseRows, insertSubmission, type PhaseInsert } from "@/lib/phase-store";
 import { isUuid } from "@/lib/content-api";
 import {
-  validatePlan,
+  BUILTIN_RUNBOOKS,
+  DEFAULT_STAGE_WEIGHTS,
+  snapshotDsaConfig,
+  snapshotPartAConfig,
+  snapshotPuzzleConfig,
+  validateStages,
   validateSubmissions,
-  type PhasePlan,
+  type StageFlow,
+  type StageKey,
+  type StagePlan,
   type SubmissionInput,
 } from "@/lib/runbook";
 import { sendInterviewInvite } from "@/lib/email";
@@ -66,11 +73,11 @@ export async function POST(req: Request) {
 
     // ── DSA Review: validate the structured inputs before doing any heavy work ──
     const isDsaReview = roundType === DSA_REVIEW;
-    let dsa: DsaCreateInput | null = null;
+    let stagesInput: StagesCreateInput | null = null;
     if (isDsaReview) {
-      const parsed = await parseDsaInput(formData, session.user.orgId, duration);
+      const parsed = await parseStagesInput(formData, session.user.orgId, duration);
       if ("error" in parsed) return NextResponse.json({ error: parsed.error }, { status: 400 });
-      dsa = parsed;
+      stagesInput = parsed;
     }
 
     let resumeText = "";
@@ -168,13 +175,13 @@ export async function POST(req: Request) {
       createdBy: session.user.id || undefined,
     };
 
-    if (dsa) {
-      // Interview, submissions and phase snapshots are created atomically.
+    if (stagesInput) {
+      // Interview, the Part A submission and every stage's snapshot are created atomically.
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
         await saveInterview(interview, client);
-        await insertDsaReviewRows(client, { interviewId: id, ...dsa });
+        await insertStages(client, id, stagesInput);
         await client.query("COMMIT");
       } catch (err) {
         await client.query("ROLLBACK").catch(() => {});
@@ -227,11 +234,16 @@ export async function POST(req: Request) {
 
 const DSA_REVIEW = "DSA Review";
 
-interface DsaCreateInput {
-  submissions: SubmissionInput[];
-  problem: { id: string; version: number; title: string; runbook: any };
-  puzzles: Array<{ id: string; version: number; title: string; runbook: any }>;
-  plan: PhasePlan;
+type Row = { id: string; title: string; version: number; runbook: any };
+
+interface StagesCreateInput {
+  stages: StagePlan[];
+  /** Part A only */
+  submission: SubmissionInput | null;
+  partaProblem: Row | null;
+  dsaPool: Row[];
+  puzzlePool: Row[];
+  flows: Record<StageKey, StageFlow>;
 }
 
 function jsonField(formData: FormData, name: string): unknown {
@@ -244,55 +256,73 @@ function jsonField(formData: FormData, name: string): unknown {
   }
 }
 
-async function parseDsaInput(formData: FormData, orgId: string, duration: number): Promise<DsaCreateInput | { error: string }> {
-  const primaryProblemId = (formData.get("primaryProblemId") as string) || "";
-  if (!isUuid(primaryProblemId)) return { error: "primaryProblemId is required for a DSA Review interview" };
-
-  const subsRaw = jsonField(formData, "submissions");
-  const puzzleIdsRaw = jsonField(formData, "puzzleIds");
-  const planRaw = jsonField(formData, "plan");
-  if (typeof subsRaw === "symbol" || typeof puzzleIdsRaw === "symbol" || typeof planRaw === "symbol") {
-    return { error: "submissions, puzzleIds and plan must be valid JSON" };
-  }
-
-  const { rows: problemRows } = await pool.query(
-    "SELECT id, title, version, runbook FROM problems WHERE id = $1 AND org_id = $2 AND is_archived = false",
-    [primaryProblemId, orgId]
+async function loadFlow(plan: StagePlan, orgId: string): Promise<StageFlow | { error: string }> {
+  if (!plan.runbookId) return { ...BUILTIN_RUNBOOKS[plan.key], runbookId: null, runbookVersion: 0 };
+  const { rows } = await pool.query(
+    "SELECT id, name, description, instructions, probes, rubric, version FROM runbooks WHERE id = $1 AND org_id = $2 AND kind = $3 AND is_archived = false",
+    [plan.runbookId, orgId, plan.key]
   );
-  if (problemRows.length === 0) return { error: "Primary problem not found in your organization" };
-  const problem = problemRows[0];
+  if (rows.length === 0) return { error: `The runbook chosen for the ${plan.key} stage was not found` };
+  const r = rows[0];
+  return { runbookId: r.id, runbookVersion: r.version, name: r.name, description: r.description, instructions: r.instructions, probes: r.probes || [], rubric: r.rubric || [] };
+}
 
-  // The primary submission is always for the chosen problem; default its title from the problem.
-  const subsInput = Array.isArray(subsRaw)
-    ? subsRaw.map((s: any) => (s && s.isPrimary === true && !String(s.problemTitle || "").trim() ? { ...s, problemTitle: problem.title } : s))
-    : subsRaw;
-  const subs = validateSubmissions(subsInput);
-  if (!subs.ok) return { error: subs.errors[0] };
+async function parseStagesInput(formData: FormData, orgId: string, duration: number): Promise<StagesCreateInput | { error: string }> {
+  const stagesRaw = jsonField(formData, "stages");
+  const subRaw = jsonField(formData, "partaSubmission");
+  if (typeof stagesRaw === "symbol" || typeof subRaw === "symbol") return { error: "stages and partaSubmission must be valid JSON" };
 
-  // Context submissions may reference a problem, but only one from this org.
-  const refIds = subs.value.filter((s) => !s.isPrimary && s.problemId && isUuid(s.problemId)).map((s) => s.problemId as string);
-  let validRefs: string[] = [];
-  if (refIds.length > 0) {
-    const { rows } = await pool.query("SELECT id FROM problems WHERE id = ANY($1::uuid[]) AND org_id = $2", [refIds, orgId]);
-    validRefs = rows.map((r) => r.id);
+  const v = validateStages(stagesRaw, duration);
+  if (!v.ok) return { error: v.errors[0] };
+  const stages = v.value;
+  const out: StagesCreateInput = { stages, submission: null, partaProblem: null, dsaPool: [], puzzlePool: [], flows: {} as Record<StageKey, StageFlow> };
+
+  for (const st of stages) {
+    const flow = await loadFlow(st, orgId);
+    if ("error" in flow) return flow;
+    out.flows[st.key] = flow;
+
+    if (st.key === "parta") {
+      const { rows } = await pool.query(
+        "SELECT id, title, version, runbook FROM problems WHERE id = $1 AND org_id = $2 AND kind = 'parta' AND is_archived = false",
+        [st.itemId, orgId]
+      );
+      if (rows.length === 0) return { error: "The Part A question was not found in your organization" };
+      out.partaProblem = rows[0];
+      const sub = validateSubmissions([{ ...(subRaw && typeof subRaw === "object" ? (subRaw as object) : {}), problemTitle: rows[0].title, isPrimary: true }]);
+      if (!sub.ok) return { error: `Part A submission: ${sub.errors[0]}` };
+      out.submission = sub.value[0];
+    } else if (st.key === "dsa") {
+      const { rows } =
+        st.mode === "specific"
+          ? await pool.query("SELECT id, title, version, runbook FROM problems WHERE id = $1 AND org_id = $2 AND kind = 'dsa' AND is_archived = false", [st.itemId, orgId])
+          : await pool.query("SELECT id, title, version, runbook FROM problems WHERE org_id = $1 AND kind = 'dsa' AND is_archived = false ORDER BY title", [orgId]);
+      if (rows.length === 0) return { error: st.mode === "specific" ? "The DSA problem was not found in your organization" : "There are no DSA problems to pick from at random. Add one first" };
+      out.dsaPool = rows;
+    } else {
+      const { rows } =
+        st.mode === "specific"
+          ? await pool.query("SELECT id, title, version, runbook FROM puzzles WHERE id = $1 AND org_id = $2 AND is_archived = false", [st.itemId, orgId])
+          : await pool.query("SELECT id, title, version, runbook FROM puzzles WHERE org_id = $1 AND is_archived = false ORDER BY title", [orgId]);
+      if (rows.length === 0) return { error: st.mode === "specific" ? "The puzzle was not found in your organization" : "There are no puzzles to pick from at random. Add one first" };
+      out.puzzlePool = rows;
+    }
   }
-  const submissions = subs.value.map((s) => (s.isPrimary || (s.problemId && validRefs.indexOf(s.problemId) !== -1) ? s : { ...s, problemId: null }));
+  return out;
+}
 
-  const puzzleIds: string[] = Array.isArray(puzzleIdsRaw) ? Array.from(new Set(puzzleIdsRaw.map(String))) : [];
-  if (puzzleIds.some((p) => !isUuid(p))) return { error: "puzzleIds must be valid ids" };
-  let puzzles: DsaCreateInput["puzzles"] = [];
-  if (puzzleIds.length > 0) {
-    const { rows } = await pool.query(
-      "SELECT id, title, version, runbook FROM puzzles WHERE id = ANY($1::uuid[]) AND org_id = $2 AND is_archived = false",
-      [puzzleIds, orgId]
-    );
-    if (rows.length !== puzzleIds.length) return { error: "One or more puzzles were not found in your organization" };
-    // Keep the interviewer's order (matters for "ordered" selection).
-    puzzles = puzzleIds.map((pid) => rows.find((r) => r.id === pid)!);
-  }
+/** Writes the Part A submission and one pending phase per stage (in order), with their snapshots. Inside the caller's transaction. */
+async function insertStages(client: import("pg").PoolClient, interviewId: string, inp: StagesCreateInput) {
+  let submissionId = "";
+  if (inp.submission && inp.partaProblem) submissionId = await insertSubmission(client, interviewId, inp.partaProblem.id, inp.submission);
 
-  const plan = validatePlan(planRaw, duration);
-  if (!plan.ok) return { error: plan.errors[0] };
-
-  return { submissions, problem, puzzles, plan: plan.value };
+  const phases: PhaseInsert[] = inp.stages.map((st) => {
+    const flow = inp.flows[st.key];
+    let config: unknown;
+    if (st.key === "parta") config = snapshotPartAConfig(inp.partaProblem!, submissionId, [], flow);
+    else if (st.key === "dsa") config = snapshotDsaConfig(inp.dsaPool, st.mode, flow);
+    else config = snapshotPuzzleConfig(inp.puzzlePool, st.mode === "random" ? "random" : "specific", flow);
+    return { phaseKey: st.key, budgetMin: st.budgetMin, graceMin: st.graceMin, earlyDoneAfterMin: st.earlyDoneAfterMin, weight: DEFAULT_STAGE_WEIGHTS[st.key], config };
+  });
+  await insertPhaseRows(client, interviewId, phases);
 }

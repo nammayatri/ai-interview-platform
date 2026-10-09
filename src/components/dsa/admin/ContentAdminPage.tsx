@@ -9,7 +9,7 @@ import { ConfirmModal } from "@/components/ConfirmModal";
 import { validateProblemRunbook, validatePuzzleRunbook } from "@/lib/runbook";
 import { AddButton, HintLadderEditor, MarkdownField, NumberField, RemoveButton, RubricEditor, Section, StringListEditor } from "./fields";
 
-type Kind = "problem" | "puzzle";
+type Kind = "parta" | "dsa" | "puzzle";
 
 interface Item {
   id: string;
@@ -57,25 +57,34 @@ const emptyPuzzle = (): Draft => ({
 });
 
 const COPY = {
-  problem: {
-    plural: "Problems",
-    singular: "Problem",
-    blurb: "DSA problems candidates solved on HackerRank, each with a runbook the AI follows when probing their submission.",
+  parta: {
+    plural: "Part A Questions",
+    singular: "Part A Question",
+    blurb: "Questions whose solution the candidate wrote beforehand. You paste their submission when creating the interview and the AI evaluates it against this question's reference solutions.",
     path: "/api/problems",
+    apiKind: "parta",
+  },
+  dsa: {
+    plural: "DSA Problems",
+    singular: "DSA Problem",
+    blurb: "Problems solved live: the AI asks for the approach, then the candidate types the code in the scratchpad. Pick one per interview or let it choose at random.",
+    path: "/api/problems",
+    apiKind: "dsa",
   },
   puzzle: {
     plural: "Puzzles",
     singular: "Puzzle",
-    blurb: "Reasoning puzzles for the second half of a DSA Review round, each with a runbook of accepted answers, hints and a rubric.",
+    blurb: "Reasoning puzzles with accepted answers, hints and a rubric. Pick one per interview or let it choose at random.",
     path: "/api/puzzles",
+    apiKind: "",
   },
 };
 
 function toDraft(kind: Kind, item: Item): Draft {
-  const base = kind === "problem" ? emptyProblem() : emptyPuzzle();
+  const base = kind !== "puzzle" ? emptyProblem() : emptyPuzzle();
   const rb = item.runbook || {};
   const merged = { ...base.runbook, ...rb };
-  if (kind === "problem") {
+  if (kind !== "puzzle") {
     merged.outcomeProbes = {
       passed: rb.outcomeProbes?.passed?.length ? rb.outcomeProbes.passed : [""],
       partial: rb.outcomeProbes?.partial?.length ? rb.outcomeProbes.partial : [""],
@@ -103,7 +112,7 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
 
   const fetchItems = useCallback(async () => {
     try {
-      const res = await fetch(`${copy.path}?archived=${showArchived}`);
+      const res = await fetch(`${copy.path}?archived=${showArchived}${copy.apiKind ? `&kind=${copy.apiKind}` : ""}`);
       const data = await res.json();
       setItems(Array.isArray(data) ? data : []);
     } catch {
@@ -115,7 +124,7 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
 
   useEffect(() => { fetchItems(); }, [fetchItems]);
 
-  const openCreate = () => { setEditing(null); setDraft(kind === "problem" ? emptyProblem() : emptyPuzzle()); setErrors([]); setShowJson(false); setJsonText(""); };
+  const openCreate = () => { setEditing(null); setDraft(kind !== "puzzle" ? emptyProblem() : emptyPuzzle()); setErrors([]); setShowJson(false); setJsonText(""); };
   const openEdit = (item: Item) => { setEditing(item); setDraft(toDraft(kind, item)); setErrors([]); setShowJson(false); setJsonText(""); };
   const close = () => { setDraft(null); setEditing(null); };
 
@@ -126,6 +135,7 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
     difficulty: d.difficulty || null,
     tags: d.tags.split(",").map((t) => t.trim()).filter(Boolean),
     runbook: d.runbook,
+    ...(copy.apiKind ? { kind: copy.apiKind } : {}),
   });
 
   const handleSave = async () => {
@@ -133,7 +143,7 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
     const payload = payloadOf(draft);
     const local: string[] = [];
     if (!payload.title) local.push("title is required");
-    const v = kind === "problem" ? validateProblemRunbook(payload.runbook) : validatePuzzleRunbook(payload.runbook);
+    const v = kind !== "puzzle" ? validateProblemRunbook(payload.runbook) : validatePuzzleRunbook(payload.runbook);
     if (!v.ok) local.push(...v.errors);
     if (!v.ok || local.length) { setErrors(local); return; }
 
@@ -165,7 +175,7 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
     await fetch(`${copy.path}/${item.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: item.title, difficulty: item.difficulty, tags: item.tags, runbook: item.runbook, isArchived: false }),
+      body: JSON.stringify({ title: item.title, difficulty: item.difficulty, tags: item.tags, runbook: item.runbook, isArchived: false, ...(copy.apiKind ? { kind: copy.apiKind } : {}) }),
     });
     fetchItems();
   };
@@ -180,7 +190,7 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
     try {
       const parsed = JSON.parse(jsonText);
       const hasEnvelope = parsed && typeof parsed === "object" && parsed.runbook;
-      const base = kind === "problem" ? emptyProblem() : emptyPuzzle();
+      const base = kind !== "puzzle" ? emptyProblem() : emptyPuzzle();
       const runbook = hasEnvelope ? parsed.runbook : parsed;
       setDraft((d) => ({
         title: hasEnvelope && parsed.title ? String(parsed.title) : d?.title || "",
@@ -237,7 +247,7 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
                   {item.tags.slice(0, 3).map((t) => <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">{t}</span>)}
                 </div>
                 <p className="text-xs text-gray-500 mb-3">
-                  {kind === "problem"
+                  {kind !== "puzzle"
                     ? `${item.runbook?.solutionTracks?.length ?? 0} tracks · ${item.runbook?.hintLadder?.length ?? 0} hints · ${item.runbook?.rubric?.length ?? 0} criteria`
                     : `~${item.expectedMin ?? item.runbook?.expectedMin} min · ${item.runbook?.hintLadder?.length ?? 0} hints · ${item.runbook?.rubric?.length ?? 0} criteria`}
                 </p>
@@ -284,7 +294,7 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
                 <Section title="Basics">
                   <div>
                     <label className="label">Title</label>
-                    <input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} className="input-field" placeholder={kind === "problem" ? "e.g. Two Sum" : "e.g. Two ropes, 45 minutes"} />
+                    <input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} className="input-field" placeholder={kind === "puzzle" ? "e.g. Two ropes, 45 minutes" : kind === "parta" ? "e.g. Locking tree: lock, unlock, upgrade" : "e.g. Two Sum"} />
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
@@ -302,9 +312,9 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
                   <MarkdownField label="Statement (markdown)" value={rb.statementMd} onChange={(v) => setRunbook({ statementMd: v })} hint={kind === "puzzle" ? "Keep it prose-first: the AI reads this aloud once." : undefined} />
                 </Section>
 
-                {kind === "problem" ? (
+                {kind !== "puzzle" ? (
                   <>
-                    <Section title="Solution tracks" subtitle="Each approach with its complexity and the probes to use when the candidate is on that track. Never shown to the candidate.">
+                    <Section title="Reference solutions" subtitle="Each approach with its complexity and the probes to use when the candidate is on that track, from brute force up to the best one (list the best last). Never shown to the candidate.">
                       {rb.solutionTracks.map((t: any, i: number) => {
                         const set = (patch: any) => setRunbook({ solutionTracks: rb.solutionTracks.map((x: any, j: number) => (j === i ? { ...x, ...patch } : x)) });
                         return (
@@ -325,11 +335,11 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
                       <AddButton onClick={() => setRunbook({ solutionTracks: [...rb.solutionTracks, { key: "", name: "", approach: "", timeComplexity: "", spaceComplexity: "", probes: [""] }] })}>Add track</AddButton>
                     </Section>
 
-                    <Section title="Probes by submission outcome" subtitle="Used according to the HackerRank result of the primary submission.">
+                    {kind === "parta" && <Section title="Probes by submission outcome" subtitle="Used according to how the candidate's submission fared (passed, partial or failed).">
                       {(["passed", "partial", "failed"] as const).map((o) => (
                         <StringListEditor key={o} label={`If the submission ${o === "passed" ? "passed" : o === "partial" ? "partially passed" : "failed"}`} items={rb.outcomeProbes[o]} onChange={(list) => setRunbook({ outcomeProbes: { ...rb.outcomeProbes, [o]: list } })} placeholder="A probe question" />
                       ))}
-                    </Section>
+                    </Section>}
                   </>
                 ) : (
                   <Section title="Answers and timing">
@@ -346,8 +356,8 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
                   <RubricEditor rubric={rb.rubric} onChange={(rubric) => setRunbook({ rubric })} />
                 </Section>
 
-                {kind === "problem" && (
-                  <Section title="Phase defaults" subtitle="Prefilled when an interviewer creates a DSA Review interview with this problem.">
+                {kind !== "puzzle" && (
+                  <Section title="Time defaults" subtitle="Prefilled when an interviewer creates a DSA Review interview with this problem.">
                     <div className="grid grid-cols-3 gap-3">
                       <NumberField label="DSA budget (min)" min={1} value={rb.defaults.budgetMin} onChange={(v) => setRunbook({ defaults: { ...rb.defaults, budgetMin: v } })} />
                       <NumberField label="Grace (min)" value={rb.defaults.graceMin} onChange={(v) => setRunbook({ defaults: { ...rb.defaults, graceMin: v } })} />

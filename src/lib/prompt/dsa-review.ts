@@ -6,7 +6,8 @@
 //  - rubric criteria are never in a conversational prompt
 import type { AISettings } from "../ai-settings";
 import { CLOSE_RESERVE_MIN, type PhaseResolution, type PhaseRow } from "../phase-engine";
-import type { DsaPhaseConfig, Hint, PuzzlePhaseConfig } from "../runbook";
+import { phaseFlow, phaseMaterial } from "../phase-config";
+import { STAGE_LABELS, type DsaPhaseConfig, type Hint, type PartAPhaseConfig, type PuzzlePhaseConfig } from "../runbook";
 import type { Submission } from "../phase-store";
 import type { TranscriptEntry } from "../store";
 
@@ -70,7 +71,7 @@ function buildCommonBlock(inp: DsaPromptInput): string {
     ? `\n\nINTERVIEWER NOTES (from the hiring team):\n${inp.interviewerNotes}`
     : "";
 
-  return `You are ${interviewerName}, a ${toneLabel} senior interviewer running the DSA REVIEW round (${inp.duration}-minute interview, ${inp.level} ${inp.role}). The candidate has already submitted a solution on HackerRank. This round tests whether they understand their own solution: can they explain it, find its flaws, and improve it. The candidate does not write or run code in this round. They see the problem and their code on screen and talk to you; they may also type notes in a scratchpad.
+  return `You are ${interviewerName}, a ${toneLabel} senior interviewer running a multi-stage CODING EVALUATION (${inp.duration}-minute interview, ${inp.level} ${inp.role}). The stages are: Part A (the candidate's own, already written solution: do they understand it, can they find its flaws and improve it), a live DSA problem (can they work out an approach and write it), and a reasoning puzzle. Only the stage described under CURRENT PHASE is running now. The candidate cannot run code. They see the problem on screen, talk to you, and can type notes, pseudocode or code in a scratchpad.
 
 ${nameLine}
 
@@ -78,10 +79,10 @@ ${inp.levelCalibration}
 
 CORE RULES (never break):
 - ENGLISH ONLY.
-- Output is spoken via TTS. Natural prose, no markdown, no bullet lists. Refer to the candidate's code by line number ("on line 12"). Never read code aloud.
+- Output is spoken via TTS. Natural prose, no markdown, no bullet lists. Refer to code by line number ("on line 12") and never read code aloud.
 - HINTS: you may give a hint ONLY if this prompt contains a section titled UNLOCKED HINT, and only when the candidate is clearly stuck. Deliver it close to as written and append [HINT:n] (n is the hint number shown). Never invent hints. Never give hint content from anywhere else.
 - CLARIFICATIONS: you may clarify what the problem statement means. You may not suggest an approach, a data structure, or a complexity target unless it is the unlocked hint.
-- NEVER reveal solution approaches, accepted answers, rubric criteria, or any hint that is not unlocked.
+- NEVER reveal solution approaches or the names of data structures that make a solution faster, accepted answers, rubric criteria, or any hint that is not unlocked. Ask the candidate to find them.
 - NEVER reveal scores or say "good/bad answer", "correct/wrong", "nice", "great".
 - NEVER tell the candidate to be brief.
 - If the candidate asks for a moment to think ("give me a minute", "let me think"): reply with ONE short sentence such as "Of course, take your time." Do not ask a new question and do not treat it as an answer (no [ASSESS] marker for that turn).
@@ -118,13 +119,13 @@ function phaseTimeNote(phase: PhaseRow, res: PhaseResolution): string {
   const budget = phase.budgetMin ?? 0;
   let note = `\n\nPHASE TIME: minute ${Math.floor(res.elapsedInPhaseMin)} of ${budget}.`;
   if (res.action === "request_wrap" || res.action === "force_end") {
-    note += `\nPHASE WRAP-UP: this phase is out of time. Finish the current thread in this turn, say one transition sentence${phase.phaseKey === "dsa" ? " (the next part of the interview is a short reasoning puzzle if time allows)" : ""}, and append [PHASE_DONE].`;
+    note += `\nPHASE WRAP-UP: this phase is out of time. Finish the current thread in this turn, say one short transition sentence, and append [PHASE_DONE].`;
   }
   note += `\nWEAK ANSWERS SO FAR: ${phase.weakAnswers}`;
   return note;
 }
 
-function primarySubmissionBlock(subs: Submission[], cfg: DsaPhaseConfig): { primary: Submission | undefined; block: string } {
+function primarySubmissionBlock(subs: Submission[], cfg: PartAPhaseConfig): { primary: Submission | undefined; block: string } {
   const primary = subs.find((s) => s.id === cfg.primarySubmissionId) || subs.find((s) => s.isPrimary);
   if (!primary) return { primary, block: "No submission is available." };
   const tests = primary.testsTotal !== null ? `, tests passed ${primary.testsPassed ?? "?"}/${primary.testsTotal}` : "";
@@ -135,8 +136,25 @@ ${wrapCandidateData("submitted code, line-numbered", numberLines(primary.code))}
   return { primary, block };
 }
 
-function buildDsaPhaseSystem(inp: DsaPromptInput, phase: PhaseRow): string {
-  const cfg = phase.config as DsaPhaseConfig;
+/** The steps come from the interview runbook plugged into this stage (built-in default when none was chosen). */
+function flowSection(phase: PhaseRow, label: string): string {
+  const flow = phaseFlow(phase);
+  const probes = flow.probes.length ? `\nEXTRA PROBES YOU MAY USE: ${flow.probes.join(" | ")}` : "";
+  return `${label} FLOW (runbook "${flow.name}"). Work through these steps in order, ONE question per turn, adapting to the answers:\n${flow.instructions}${probes}`;
+}
+
+function tracksText(rb: PartAPhaseConfig["runbook"]): string {
+  return rb.solutionTracks
+    .map((t, i) => {
+      const cx = [t.timeComplexity && `time ${t.timeComplexity}`, t.spaceComplexity && `space ${t.spaceComplexity}`].filter(Boolean).join(", ");
+      const probeLines = t.probes.length ? `\n  When the candidate is on this track, probe: ${t.probes.join(" | ")}` : "";
+      return `${i + 1}. ${t.name}${cx ? ` (${cx})` : ""}${t.approach ? `: ${t.approach}` : ""}${probeLines}`;
+    })
+    .join("\n");
+}
+
+function buildPartASystem(inp: DsaPromptInput, phase: PhaseRow): string {
+  const cfg = phase.config as PartAPhaseConfig;
   const rb = cfg.runbook;
   const { primary, block } = primarySubmissionBlock(inp.submissions, cfg);
   const outcome = primary?.outcome || "passed";
@@ -149,28 +167,17 @@ function buildDsaPhaseSystem(inp: DsaPromptInput, phase: PhaseRow): string {
     : "";
 
   const probes = rb.outcomeProbes[outcome] || [];
-  const probesBlock = probes.length ? `\n\nPROBES FOR A ${outcome.toUpperCase()} SUBMISSION (use in roughly this order, adapt to the conversation):\n${probes.map((p, i) => `${i + 1}. ${p}`).join("\n")}` : "";
+  const probesBlock = probes.length ? `\n\nPROBES FOR A ${outcome.toUpperCase()} SUBMISSION (use as needed, adapt to the conversation):\n${probes.map((p, i) => `${i + 1}. ${p}`).join("\n")}` : "";
 
-  const tracks = rb.solutionTracks
-    .map((t) => {
-      const cx = [t.timeComplexity && `time ${t.timeComplexity}`, t.spaceComplexity && `space ${t.spaceComplexity}`].filter(Boolean).join(", ");
-      const probeLines = t.probes.length ? `\n  When the candidate is on this track, probe: ${t.probes.join(" | ")}` : "";
-      return `- ${t.name}${cx ? ` (${cx})` : ""}${t.approach ? `: ${t.approach}` : ""}${probeLines}`;
-    })
-    .join("\n");
-
-  const goal =
-    outcome === "passed"
-      ? "GOAL: the submission passed. Probe whether the candidate truly understands it (why it works, edge cases, complexity), then push them toward the next, better solution track."
-      : "GOAL: the submission did not fully pass. First see whether the candidate can locate the failing case or the bug themselves by reasoning about their code. Do not point at the bug. Once they have found it (or clearly cannot), move on to correctness of the fix and then optimization.";
+  const goal = flowSection(phase, "PART A");
 
   const opening = inp.history.length === 0
-    ? `\n\nOPENING TURN: Greet the candidate briefly, state the format in one sentence (we will discuss your submission to this problem), then ask your first probe. No [ASSESS] marker on this turn.`
+    ? `\n\nOPENING TURN: Greet the candidate briefly, state the format in one sentence (we will go through your own solution to this problem), then ask your first question from step 1. No [ASSESS] marker on this turn.`
     : "";
 
   return `${buildCommonBlock(inp)}
 
-CURRENT PHASE: DSA discussion of the candidate's own submission.
+CURRENT PHASE: PART A, evaluating the candidate's own submission.
 
 PROBLEM: ${cfg.problemTitle}
 ${rb.statementMd}
@@ -178,18 +185,48 @@ ${rb.statementMd}
 ${block}${contextBlock}
 
 REFERENCE SOLUTION TRACKS (for your judgment only; never reveal or name them to the candidate):
-${tracks}${probesBlock}
+${tracksText(rb)}${probesBlock}
 
-${goal}${phaseTimeNote(phase, inp.resolution)}${hintSection(inp.unlockedHint)}${scratchpadSection(inp.scratchpad)}${globalTimeNote(inp.resolution)}${opening}`;
+${goal}${priorPhasesNote(inp)}${phaseTimeNote(phase, inp.resolution)}${hintSection(inp.unlockedHint)}${scratchpadSection(inp.scratchpad)}${globalTimeNote(inp.resolution)}${opening}`;
 }
 
-/** Factual two-sentence summary of the DSA phase, for the puzzle prompt (no solution material). */
-export function summarizeDsaPhase(dsa: PhaseRow | undefined): string {
-  if (!dsa || !dsa.startedAt) return "";
-  const end = dsa.endedAt ? new Date(dsa.endedAt).getTime() : Date.now();
-  const mins = Math.max(0, Math.round((end - new Date(dsa.startedAt).getTime()) / 60000));
-  const hints = dsa.hintsUsed.length;
-  return `The DSA discussion of the candidate's submission lasted about ${mins} minute(s). The candidate received ${hints} hint(s) and gave ${dsa.weakAnswers} weak answer(s).`;
+function buildDsaStageSystem(inp: DsaPromptInput, phase: PhaseRow): string {
+  const m = phaseMaterial(phase);
+  const sel = (phase.config as DsaPhaseConfig).selected;
+  if (!sel) return `${buildCommonBlock(inp)}\n\nNo problem is active.`;
+
+  const goal = flowSection(phase, "DSA");
+
+  const opening = inp.history.length === 0
+    ? `\n\nOPENING TURN: Say one sentence that you are moving on to a coding problem, summarise the problem in two sentences (the candidate also sees it on screen), then ask them to think aloud about how they would approach it. No [ASSESS] marker on this turn.`
+    : "";
+
+  return `${buildCommonBlock(inp)}
+
+CURRENT PHASE: a DSA problem solved live.
+
+PROBLEM: ${m.title}
+${sel.runbook.statementMd}
+
+REFERENCE SOLUTION TRACKS (for your judgment only; never reveal or name them to the candidate; the LAST listed track is the best):
+${tracksText(sel.runbook)}
+
+${goal}${priorPhasesNote(inp)}${phaseTimeNote(phase, inp.resolution)}${hintSection(inp.unlockedHint)}${scratchpadSection(inp.scratchpad)}${globalTimeNote(inp.resolution)}${opening}`;
+}
+
+/** Factual summary of one finished stage for later stages: duration, hints, weak answers. No solution material. */
+export function summarizePhase(p: PhaseRow | undefined): string {
+  if (!p || !p.startedAt) return "";
+  const end = p.endedAt ? new Date(p.endedAt).getTime() : Date.now();
+  const mins = Math.max(0, Math.round((end - new Date(p.startedAt).getTime()) / 60000));
+  return `${STAGE_LABELS[p.phaseKey]}: about ${mins} minute(s), ${p.hintsUsed.length} hint(s) given, ${p.weakAnswers} weak answer(s).`;
+}
+
+function priorPhasesNote(inp: DsaPromptInput): string {
+  const current = inp.resolution.current;
+  const done = inp.phases.filter((p) => p.status === "completed" && current && p.sequence < current.sequence);
+  if (done.length === 0) return "";
+  return `\n\nEARLIER STAGES (already finished; do not return to them): ${done.map(summarizePhase).filter(Boolean).join(" ")}`;
 }
 
 function buildPuzzlePhaseSystem(inp: DsaPromptInput, phase: PhaseRow): string {
@@ -199,7 +236,6 @@ function buildPuzzlePhaseSystem(inp: DsaPromptInput, phase: PhaseRow): string {
   const accepted = sel.runbook.acceptedAnswers.length
     ? `ACCEPTED ANSWERS (for your judgment only; never confirm or reveal them, and never say whether an answer is right):\n${sel.runbook.acceptedAnswers.map((a) => `- ${a}`).join("\n")}`
     : "ACCEPTED ANSWERS: none listed; judge the reasoning.";
-  const summary = summarizeDsaPhase(inp.phases.find((p) => p.phaseKey === "dsa"));
 
   const opening = inp.history.length === 0
     ? `\n\nOPENING TURN: Say one sentence that you are moving on to a puzzle, then read the puzzle statement aloud once, then wait for the candidate. No [ASSESS] marker on this turn.`
@@ -207,14 +243,13 @@ function buildPuzzlePhaseSystem(inp: DsaPromptInput, phase: PhaseRow): string {
 
   return `${buildCommonBlock(inp)}
 
-CURRENT PHASE: Reasoning puzzle. The earlier DSA discussion is finished; do not return to it.
-${summary ? `BACKGROUND: ${summary}\n` : ""}
+CURRENT PHASE: Reasoning puzzle.
 PUZZLE: ${sel.title}
 ${sel.runbook.statementMd}
 
 ${accepted}
 
-WHAT GOOD LOOKS LIKE: the candidate reasons out loud, tests small cases, states assumptions and checks their answer. Judge the reasoning, not just the final answer. Ask them to justify or sanity-check an answer rather than telling them whether it is right.${phaseTimeNote(phase, inp.resolution)}${hintSection(inp.unlockedHint)}${scratchpadSection(inp.scratchpad)}${globalTimeNote(inp.resolution)}${opening}`;
+${flowSection(phase, "PUZZLE")}${priorPhasesNote(inp)}${phaseTimeNote(phase, inp.resolution)}${hintSection(inp.unlockedHint)}${scratchpadSection(inp.scratchpad)}${globalTimeNote(inp.resolution)}${opening}`;
 }
 
 function buildClosingSystem(inp: DsaPromptInput): string {
@@ -227,7 +262,8 @@ export function buildDsaReviewMessages(inp: DsaPromptInput): Msg[] {
   const phase = inp.resolution.current;
   let system: string;
   if (!phase) system = buildClosingSystem(inp);
-  else if (phase.phaseKey === "dsa") system = buildDsaPhaseSystem(inp, phase);
+  else if (phase.phaseKey === "parta") system = buildPartASystem(inp, phase);
+  else if (phase.phaseKey === "dsa") system = buildDsaStageSystem(inp, phase);
   else system = buildPuzzlePhaseSystem(inp, phase);
 
   const messages: Msg[] = [{ role: "system", content: system }];

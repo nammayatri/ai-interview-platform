@@ -25,11 +25,11 @@ function mapRow(kind: Kind, r: any) {
     isArchived: r.is_archived,
     createdAt: r.created_at?.toISOString?.() ?? r.created_at,
     updatedAt: r.updated_at?.toISOString?.() ?? r.updated_at,
-    ...(kind === "puzzle" ? { expectedMin: r.expected_min } : {}),
+    ...(kind === "puzzle" ? { expectedMin: r.expected_min } : { kind: r.kind }),
   };
 }
 
-function parseBasics(body: any): { ok: true; title: string; difficulty: string | null; tags: string[] } | { ok: false; errors: string[] } {
+function parseBasics(body: any): { ok: true; title: string; difficulty: string | null; tags: string[]; itemKind: string | null } | { ok: false; errors: string[] } {
   const errors: string[] = [];
   const title = typeof body?.title === "string" ? body.title.trim() : "";
   if (!title) errors.push("title is required");
@@ -37,8 +37,10 @@ function parseBasics(body: any): { ok: true; title: string; difficulty: string |
   const difficulty = body?.difficulty ? String(body.difficulty).toLowerCase() : null;
   if (difficulty && !DIFFICULTIES.includes(difficulty)) errors.push("difficulty must be easy, medium or hard");
   const tags = Array.isArray(body?.tags) ? body.tags.map((t: any) => String(t).trim()).filter(Boolean).slice(0, 20) : [];
+  // problems: "parta" = a Part A question (the candidate's own solution is reviewed), "dsa" = solved live
+  const itemKind = body?.kind === "parta" ? "parta" : body?.kind === "dsa" ? "dsa" : null;
   if (errors.length) return { ok: false, errors };
-  return { ok: true, title, difficulty, tags };
+  return { ok: true, title, difficulty, tags, itemKind };
 }
 
 const bad = (errors: string[]) => NextResponse.json({ error: errors[0], errors }, { status: 400 });
@@ -50,10 +52,13 @@ export function contentHandlers(kind: Kind) {
     async list(req: Request) {
       const auth = await requireRole(req, ANY_ROLE);
       if (auth instanceof NextResponse) return auth;
-      const includeArchived = new URL(req.url).searchParams.get("archived") === "true";
+      const url = new URL(req.url);
+      const includeArchived = url.searchParams.get("archived") === "true";
+      const wantKind = kind === "problem" ? url.searchParams.get("kind") : null;
+      const filterKind = wantKind === "parta" || wantKind === "dsa";
       const { rows } = await pool.query(
-        `SELECT * FROM ${table} WHERE org_id = $1 ${includeArchived ? "" : "AND is_archived = false"} ORDER BY title ASC`,
-        [auth.user.orgId]
+        `SELECT * FROM ${table} WHERE org_id = $1 ${includeArchived ? "" : "AND is_archived = false"} ${filterKind ? "AND kind = $2" : ""} ORDER BY title ASC`,
+        filterKind ? [auth.user.orgId, wantKind] : [auth.user.orgId]
       );
       return NextResponse.json(rows.map((r) => mapRow(kind, r)));
     },
@@ -75,9 +80,9 @@ export function contentHandlers(kind: Kind) {
               [auth.user.orgId, basics.title, basics.difficulty, basics.tags, rb.value.expectedMin, JSON.stringify(rb.value), auth.user.id]
             )
           : await pool.query(
-              `INSERT INTO problems (org_id, title, difficulty, tags, runbook, created_by)
-               VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-              [auth.user.orgId, basics.title, basics.difficulty, basics.tags, JSON.stringify(rb.value), auth.user.id]
+              `INSERT INTO problems (org_id, title, difficulty, tags, runbook, created_by, kind)
+               VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+              [auth.user.orgId, basics.title, basics.difficulty, basics.tags, JSON.stringify(rb.value), auth.user.id, basics.itemKind ?? "dsa"]
             );
       return NextResponse.json(mapRow(kind, rows[0]), { status: 201 });
     },
@@ -112,9 +117,9 @@ export function contentHandlers(kind: Kind) {
             )
           : await pool.query(
               `UPDATE problems SET title=$3, difficulty=$4, tags=$5, runbook=$6, version = version + 1,
-                 is_archived = COALESCE($7, is_archived), updated_at = NOW()
+                 is_archived = COALESCE($7, is_archived), kind = COALESCE($8, kind), updated_at = NOW()
                WHERE id=$1 AND org_id=$2 RETURNING *`,
-              [id, auth.user.orgId, basics.title, basics.difficulty, basics.tags, JSON.stringify(rb.value), archived]
+              [id, auth.user.orgId, basics.title, basics.difficulty, basics.tags, JSON.stringify(rb.value), archived, basics.itemKind]
             );
       if (rows.length === 0) return NextResponse.json({ error: "Not found" }, { status: 404 });
       return NextResponse.json(mapRow(kind, rows[0]));

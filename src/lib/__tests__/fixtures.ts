@@ -1,5 +1,5 @@
 import type { PhaseRow } from "../phase-engine";
-import type { DsaPhaseConfig, Hint, ProblemRunbook, PuzzleRunbook, PuzzlePhaseConfig } from "../runbook";
+import type { DsaPhaseConfig, Hint, PartAPhaseConfig, ProblemRunbook, PuzzleRunbook, PuzzlePhaseConfig, StageFlow } from "../runbook";
 import type { Submission } from "../phase-store";
 
 export const hints: Hint[] = [
@@ -31,8 +31,28 @@ export const puzzleRunbook: PuzzleRunbook = {
   rubric: [{ id: "p1", text: "PUZZLE-RUBRIC reasoned about burn rate", weight: 1, mapsTo: "problemSolving" }],
 };
 
-export const dsaConfig: DsaPhaseConfig = {
+export const partaConfig: PartAPhaseConfig = {
   problemId: "p-1", problemVersion: 1, problemTitle: "Two Sum", runbook: problemRunbook, primarySubmissionId: "s-1", contextSubmissionIds: [],
+};
+
+export const dsaProblemRunbook: ProblemRunbook = {
+  ...problemRunbook,
+  statementMd: "DSA-STATEMENT Find the longest run of equal values.",
+  solutionTracks: [{ key: "scan", name: "Single scan", approach: "SECRET-DSA-TRACK keep a running count", timeComplexity: "O(n)", spaceComplexity: "O(1)", probes: ["What if the array is empty?"] }],
+  hintLadder: [{ order: 1, text: "DSA-HINT-ONE think about one pass", notBeforeMin: 3, scoreDiscount: 0.1 }],
+  rubric: [{ id: "d1", text: "DSA-RUBRIC reached a linear approach", weight: 1, mapsTo: "problemSolving" }],
+};
+
+export const dsaConfig: DsaPhaseConfig = {
+  pool: [{ problemId: "d-1", version: 1, title: "Longest run", runbook: dsaProblemRunbook }],
+  selection: "specific",
+  selected: { problemId: "d-1", title: "Longest run", runbook: dsaProblemRunbook },
+};
+
+export const customFlow: StageFlow = {
+  runbookId: "r-1", runbookVersion: 2, name: "Strict drill", description: "", probes: ["CUSTOM-PROBE ask about stack depth"],
+  instructions: "1. CUSTOM-STEP ask the complexity of every function twice.",
+  rubric: [{ id: "every_fn", text: "Stated complexity of every function", weight: 1, mapsTo: "technicalDepth" }],
 };
 
 export const puzzleConfig: PuzzlePhaseConfig = {
@@ -43,9 +63,9 @@ export const puzzleConfig: PuzzlePhaseConfig = {
 
 export function phase(over: Partial<PhaseRow> = {}): PhaseRow {
   return {
-    id: "ph-1", interviewId: "i-1", phaseKey: "dsa", sequence: 1, status: "active", budgetMin: 12, graceMin: 2, earlyDoneAfterMin: 6,
-    minRemainingMin: null, startedAt: "2026-01-01T10:00:00.000Z", endedAt: null, endReason: null, config: dsaConfig, selectedPuzzleId: null,
-    hintsUsed: [], weakAnswers: 0, scoreWeight: 0.7, scorecard: null, ...over,
+    id: "ph-1", interviewId: "i-1", phaseKey: "parta", sequence: 1, status: "active", budgetMin: 12, graceMin: 2, earlyDoneAfterMin: 6,
+    minRemainingMin: null, startedAt: "2026-01-01T10:00:00.000Z", endedAt: null, endReason: null, config: partaConfig, selectedPuzzleId: null,
+    hintsUsed: [], weakAnswers: 0, scoreWeight: 0.4, scorecard: null, scratchpad: "", ...over,
   };
 }
 

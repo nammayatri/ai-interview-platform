@@ -5,7 +5,7 @@
 import { DIMENSION_LABELS, type Dimension } from "@/lib/runbook";
 
 export interface ScorecardPhase {
-  key: "dsa" | "puzzle";
+  key: "parta" | "dsa" | "puzzle";
   title: string;
   status: "completed" | "skipped";
   skipReason?: string;
@@ -22,7 +22,7 @@ export interface ScorecardPhase {
   notes: string;
 }
 
-interface PhaseRowLite { phaseKey: string; status: string; startedAt: string | null; endedAt: string | null; endReason: string | null; budgetMin: number | null; config?: any }
+interface PhaseRowLite { scratchpad?: string; phaseKey: string; status: string; startedAt: string | null; endedAt: string | null; endReason: string | null; budgetMin: number | null; config?: any }
 interface SubmissionLite { id: string; problemTitle: string; language: string; code: string; outcome: string; score: number | null; testsPassed: number | null; testsTotal: number | null; externalUrl: string; notes: string; isPrimary: boolean }
 
 const END_REASON: Record<string, string> = {
@@ -42,7 +42,7 @@ const CREDIT_STYLE: Record<string, string> = {
 
 const minutes = (a: string | null, b: string | null) => (a && b ? Math.round(((new Date(b).getTime() - new Date(a).getTime()) / 60000) * 10) / 10 : null);
 
-function phaseLabel(key: string) { return key === "dsa" ? "DSA discussion" : "Puzzle"; }
+function phaseLabel(key: string) { return key === "parta" ? "Part A evaluation" : key === "dsa" ? "DSA problem" : "Puzzle"; }
 
 export function ReviewPhases({ phases, dimensionSources, interviewPhases, submissions, scratchpad }: {
   phases?: ScorecardPhase[];
@@ -167,14 +167,25 @@ export function ReviewPhases({ phases, dimensionSources, interviewPhases, submis
         </div>
       )}
 
-      <div className="card p-6 space-y-2 animate-fade-in-up delay-3">
-        <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider">Final scratchpad</h2>
-        {scratchpad && scratchpad.trim() ? (
-          <pre className="max-h-[300px] overflow-auto whitespace-pre-wrap rounded-lg bg-gray-50 border border-gray-200 p-3 text-xs text-gray-800">{scratchpad}</pre>
-        ) : (
-          <p className="text-sm text-gray-400">The candidate did not use the scratchpad.</p>
-        )}
-      </div>
+      {(() => {
+        const withPads = (interviewPhases || []).filter((p) => p.scratchpad && p.scratchpad.trim());
+        const pads = withPads.length ? withPads.map((p) => ({ key: p.phaseKey, text: p.scratchpad as string })) : scratchpad && scratchpad.trim() ? [{ key: "", text: scratchpad }] : [];
+        return (
+          <div className="card p-6 space-y-3 animate-fade-in-up delay-3">
+            <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider">Scratchpad</h2>
+            {pads.length === 0 ? (
+              <p className="text-sm text-gray-400">The candidate did not use the scratchpad.</p>
+            ) : (
+              pads.map((pd, i) => (
+                <div key={i}>
+                  {pd.key && <p className="text-xs font-medium text-gray-600 mb-1">{phaseLabel(pd.key)}</p>}
+                  <pre className="max-h-[300px] overflow-auto whitespace-pre-wrap rounded-lg bg-gray-50 border border-gray-200 p-3 text-xs text-gray-800">{pd.text}</pre>
+                </div>
+              ))
+            )}
+          </div>
+        );
+      })()}
     </>
   );
 }

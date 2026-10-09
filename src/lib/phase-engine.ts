@@ -2,14 +2,16 @@
 import {
   CLOSE_RESERVE_MIN,
   type DsaPhaseConfig,
+  type DsaPoolEntry,
   type Hint,
+  type PartAPhaseConfig,
   type PoolEntry,
   type PuzzlePhaseConfig,
 } from "./runbook";
 
 export { CLOSE_RESERVE_MIN };
 
-export type PhaseKey = "dsa" | "puzzle";
+export type PhaseKey = "parta" | "dsa" | "puzzle";
 export type PhaseStatus = "pending" | "active" | "completed" | "skipped";
 export type EndReason =
   | "ai_done"
@@ -38,12 +40,14 @@ export interface PhaseRow {
   startedAt: string | null;
   endedAt: string | null;
   endReason: EndReason | null;
-  config: DsaPhaseConfig | PuzzlePhaseConfig;
+  config: PartAPhaseConfig | DsaPhaseConfig | PuzzlePhaseConfig;
   selectedPuzzleId: string | null;
   hintsUsed: HintUse[];
   weakAnswers: number;
   scoreWeight: number;
   scorecard: any | null;
+  /** The stage's own scratchpad, snapshotted when the stage ends. */
+  scratchpad: string;
 }
 
 export interface PhaseResolution {
@@ -100,18 +104,31 @@ function mulberry32(a: number): () => number {
   };
 }
 
+/** Deterministic pick (seeded by the interview) so a reload or retry chooses the same item. */
+export function pickSeeded<T>(items: T[], seed: string): T | null {
+  if (items.length === 0) return null;
+  return items[Math.floor(mulberry32(hashSeed(seed))() * items.length)];
+}
+
+/** DSA stage: the interviewer's specific problem, or a seeded random one from the pool. */
+export function selectDsaProblem(pool: DsaPoolEntry[], seed: string, selection: "random" | "specific"): DsaPoolEntry | null {
+  if (selection === "specific") return pool[0] ?? null;
+  return pickSeeded(pool, seed);
+}
+
 export function selectPuzzle(
   pool: PoolEntry[],
   remainingMin: number,
   seed: string,
-  selection: "random" | "ordered" = "random"
+  selection: "random" | "ordered" | "specific" = "random"
 ): PoolEntry | null {
   if (!pool.length) return null;
+  // An explicitly chosen puzzle always runs; its stage time just caps how long it gets.
+  if (selection === "specific") return pool[0];
   const fitting = pool.filter((p) => p.runbook.expectedMin <= remainingMin);
   if (fitting.length > 0) {
     if (selection === "ordered") return fitting[0];
-    const rand = mulberry32(hashSeed(seed));
-    return fitting[Math.floor(rand() * fitting.length)];
+    return pickSeeded(fitting, seed);
   }
   const shortest = pool.reduce((a, b) => (b.runbook.expectedMin < a.runbook.expectedMin ? b : a));
   return shortest.runbook.expectedMin <= remainingMin + 3 ? shortest : null;

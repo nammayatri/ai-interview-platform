@@ -12,7 +12,7 @@ export interface ScoredCriterion {
 }
 
 export interface RollupPhaseInput {
-  key: "dsa" | "puzzle";
+  key: "parta" | "dsa" | "puzzle";
   scoreWeight: number;
   rubric: RubricCriterion[];
   criteria: ScoredCriterion[];

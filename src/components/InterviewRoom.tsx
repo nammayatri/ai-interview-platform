@@ -1348,8 +1348,8 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
                 <li className="flex items-start gap-2">
                   <span className="text-green-400">&#10003;</span>
                   <span>
-                    This round is a conversation about your own HackerRank submission, followed by a short puzzle if time allows. You will see the problem
-                    and your code on screen but cannot edit or run it. Use the scratchpad for notes or pseudocode; it is typed only.
+                    This is a coding evaluation in stages: a discussion of your own solution, a coding problem and a puzzle (the interviewer chose which apply).
+                    You can see the problem on screen but cannot run code. Use the scratchpad to type notes, pseudocode or code; it is typed only.
                   </span>
                 </li>
               )}
@@ -1572,7 +1572,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         <div className="px-2 pt-2 sm:px-3">
           <PhaseHeader
             phaseKey={dsa.active ? dsa.active.phaseKey : null}
-            title={dsa.active ? (dsa.active.phaseKey === "puzzle" ? dsa.active.selected?.title || "Puzzle" : dsa.active.problemTitle || "") : ""}
+            title={dsa.active ? (dsa.active.phaseKey === "parta" ? dsa.active.problemTitle || "" : dsa.active.selected?.title || "") : ""}
             phaseRemainingSec={dsa.active ? dsa.phaseRemainingSec : null}
             totalRemainingSec={remainingSeconds}
           />
@@ -1587,10 +1587,12 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
             <div className="flex min-h-[320px] flex-[3] lg:min-h-0">
               {dsa.active?.phaseKey === "puzzle" && dsa.active.selected ? (
                 <PuzzlePanel title={dsa.active.selected.title} statementMd={dsa.active.selected.runbook.statementMd} />
-              ) : dsa.dsaPhase?.runbook && dsa.active ? (
+              ) : dsa.active?.phaseKey === "dsa" && dsa.active.selected ? (
+                <ProblemPanel title={dsa.active.selected.title} statementMd={dsa.active.selected.runbook.statementMd} />
+              ) : dsa.active?.phaseKey === "parta" && dsa.active.runbook ? (
                 <ProblemPanel
-                  title={dsa.dsaPhase.problemTitle || "Problem"}
-                  statementMd={dsa.dsaPhase.runbook.statementMd}
+                  title={dsa.active.problemTitle || "Problem"}
+                  statementMd={dsa.active.runbook.statementMd}
                   submission={dsa.submissions.find((x) => x.isPrimary)}
                 />
               ) : (
@@ -1697,7 +1699,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         <div className={`flex ${isDsa ? "flex-[9]" : "flex-[3]"} flex-col gap-3 min-h-0`}>
           {isDsa && (
             <div className="flex min-h-[160px] flex-[2] lg:min-h-0">
-              <Scratchpad interviewId={interviewId} token={tokenRef.current} value={dsa.scratchpad} onChange={dsa.setScratchpad} />
+              <Scratchpad interviewId={interviewId} token={tokenRef.current} value={dsa.scratchpad} onChange={dsa.setScratchpad} placeholder={dsa.active?.phaseKey === "dsa" ? "Write your approach and code here. It is typed only and is not executed." : undefined} />
             </div>
           )}
           {/* Screen Share Status */}

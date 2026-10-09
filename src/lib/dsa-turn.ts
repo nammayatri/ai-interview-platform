@@ -28,7 +28,8 @@ import {
   saveScratchpad,
   type PhaseTransition,
 } from "./phase-store";
-import { LIMITS, type DsaPhaseConfig, type Hint, type PuzzlePhaseConfig } from "./runbook";
+import { phaseMaterial } from "./phase-config";
+import { LIMITS, type Hint } from "./runbook";
 import { addTranscriptEntry, getPhaseTranscript, type Interview, type TranscriptEntry } from "./store";
 import { pool } from "./db";
 
@@ -87,10 +88,7 @@ export async function persistScratchpad(interviewId: string, content: string, ph
   return clean;
 }
 
-function ladderOf(phase: PhaseRow): Hint[] {
-  if (phase.phaseKey === "dsa") return (phase.config as DsaPhaseConfig).runbook.hintLadder;
-  return (phase.config as PuzzlePhaseConfig).selected?.runbook.hintLadder || [];
-}
+const ladderOf = (phase: PhaseRow): Hint[] => phaseMaterial(phase).hintLadder;
 
 export function phaseInfo(phases: PhaseRow[], interview: { startedAt: string | null; duration: number }, now = new Date()): PhaseInfo {
   const res = resolvePhase(phases, interview, now);
@@ -139,6 +137,7 @@ export async function prepareDsaTurn(interview: Interview, input: DsaTurnInput):
     priorTransition = await advancePhase(interview.id, "hard_cap", { expectedKey: resolution.current.phaseKey, now });
     phases = await getPhases(interview.id);
     resolution = resolvePhase(phases, view, now);
+    scratchpad = ""; // the next stage starts with an empty scratchpad
   }
 
   const phase = resolution.current;
@@ -190,7 +189,7 @@ export async function finalizeDsaTurn(prep: DsaTurnPrep, raw: string): Promise<D
     const d = decideMarkers(markers, {
       unlockedHintOrder: prep.unlockedHint ? prep.unlockedHint.order : null,
       elapsedInPhaseMin: resolution.elapsedInPhaseMin,
-      // The puzzle phase has no configured threshold: require half its budget before an early [PHASE_DONE] counts.
+      // A phase without a configured threshold (the puzzle): require half its budget before an early [PHASE_DONE] counts.
       earlyDoneAfterMin: phase.earlyDoneAfterMin ?? (phase.budgetMin ? Math.floor(phase.budgetMin / 2) : null),
       action: resolution.action,
       expectAssess: prep.expectAssess,

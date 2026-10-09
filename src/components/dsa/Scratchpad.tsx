@@ -9,7 +9,7 @@ const MIN_INTERVAL_MS = 15_000;
  * Typed notes / pseudocode. Sent to the server at most once every 15 seconds while it changes;
  * the room also includes the latest value with every AI turn, so nothing is lost between saves.
  */
-export function Scratchpad({ interviewId, token, value, onChange }: { interviewId: string; token: string; value: string; onChange: (v: string) => void }) {
+export function Scratchpad({ interviewId, token, value, onChange, placeholder }: { interviewId: string; token: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
   const lastSentRef = useRef(value);
   const lastSentAtRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -49,7 +49,17 @@ export function Scratchpad({ interviewId, token, value, onChange }: { interviewI
       <textarea
         value={value}
         onChange={(e) => onChange(e.target.value.slice(0, MAX_CHARS))}
-        placeholder="Type notes or pseudocode here. The interviewer can see them. You can't run code in this round."
+        onKeyDown={(e) => {
+          // Tab indents instead of leaving the box, so code can be typed naturally.
+          if (e.key === "Tab" && !e.shiftKey) {
+            e.preventDefault();
+            const el = e.currentTarget;
+            const { selectionStart: a, selectionEnd: b } = el;
+            onChange((value.slice(0, a) + "    " + value.slice(b)).slice(0, MAX_CHARS));
+            requestAnimationFrame(() => { el.selectionStart = el.selectionEnd = a + 4; });
+          }
+        }}
+        placeholder={placeholder || "Type notes, pseudocode or code here. It is typed only and is not executed."}
         spellCheck={false}
         className="m-3 mt-2 min-h-[96px] flex-1 resize-none rounded-lg border border-white/5 bg-zinc-900/60 p-3 font-mono text-xs leading-relaxed text-zinc-100 placeholder:text-zinc-600 focus:border-blue-500/40 focus:outline-none"
       />

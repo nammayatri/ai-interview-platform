@@ -4,23 +4,14 @@ import type { Pool, PoolClient } from "pg";
 import { pool } from "./db";
 import {
   CLOSE_RESERVE_MIN,
+  selectDsaProblem,
   selectPuzzle,
   type EndReason,
   type HintUse,
   type PhaseKey,
   type PhaseRow,
 } from "./phase-engine";
-import {
-  DEFAULT_PHASE_WEIGHTS,
-  type DsaPhaseConfig,
-  type PhasePlan,
-  type PuzzlePhaseConfig,
-  type SubmissionInput,
-  type ProblemRunbook,
-  type PuzzleRunbook,
-  snapshotDsaConfig,
-  snapshotPuzzleConfig,
-} from "./runbook";
+import type { DsaPhaseConfig, PuzzlePhaseConfig, SubmissionInput } from "./runbook";
 
 type Db = Pool | PoolClient;
 
@@ -68,6 +59,7 @@ export function mapPhaseRow(r: any): PhaseRow {
     weakAnswers: r.weak_answers ?? 0,
     scoreWeight: Number(r.score_weight ?? 1),
     scorecard: r.scorecard ?? null,
+    scratchpad: r.scratchpad || "",
   };
 }
 
@@ -134,88 +126,109 @@ export async function hasEvent(interviewId: string, phaseKey: PhaseKey, type: st
 
 // ─── Creation ───────────────────────────────────────────────────────────────
 
-export interface ProblemSnapshotSource {
-  id: string;
-  version: number;
-  title: string;
-  runbook: ProblemRunbook;
-}
-export interface PuzzleSnapshotSource {
-  id: string;
-  version: number;
-  title: string;
-  runbook: PuzzleRunbook;
+/** Inserts the Part A submission. Must run inside the caller's transaction. */
+export async function insertSubmission(client: PoolClient, interviewId: string, problemId: string, s: SubmissionInput): Promise<string> {
+  const { rows } = await client.query(
+    `INSERT INTO submissions (interview_id, problem_id, problem_title, language, code, outcome, score, tests_passed, tests_total, external_url, notes, is_primary)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,true) RETURNING id`,
+    [interviewId, problemId, s.problemTitle, s.language || null, s.code, s.outcome, s.score ?? null, s.testsPassed ?? null, s.testsTotal ?? null, s.externalUrl || null, s.notes || null]
+  );
+  return rows[0].id;
 }
 
-/** Inserts submissions and the two phase rows. Must run inside the caller's transaction. */
-export async function insertDsaReviewRows(
-  client: PoolClient,
-  args: {
-    interviewId: string;
-    submissions: SubmissionInput[];
-    problem: ProblemSnapshotSource;
-    puzzles: PuzzleSnapshotSource[];
-    plan: PhasePlan;
-  }
-): Promise<{ primarySubmissionId: string }> {
-  const { interviewId, submissions, problem, puzzles, plan } = args;
-  let primaryId = "";
-  const contextIds: string[] = [];
-  for (const s of submissions) {
-    const { rows } = await client.query(
-      `INSERT INTO submissions (interview_id, problem_id, problem_title, language, code, outcome, score, tests_passed, tests_total, external_url, notes, is_primary)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-      [
-        interviewId,
-        s.isPrimary ? problem.id : s.problemId || null,
-        s.problemTitle,
-        s.language || null,
-        s.code,
-        s.outcome,
-        s.score ?? null,
-        s.testsPassed ?? null,
-        s.testsTotal ?? null,
-        s.externalUrl || null,
-        s.notes || null,
-        s.isPrimary,
-      ]
+export interface PhaseInsert {
+  phaseKey: PhaseKey;
+  budgetMin: number;
+  graceMin: number;
+  earlyDoneAfterMin: number | null;
+  weight: number;
+  config: unknown;
+}
+
+/** Inserts one pending phase row per stage, numbered in the order given. Must run inside the caller's transaction. */
+export async function insertPhaseRows(client: PoolClient, interviewId: string, phases: PhaseInsert[]): Promise<void> {
+  let seq = 1;
+  for (const p of phases) {
+    await client.query(
+      `INSERT INTO interview_phases (interview_id, phase_key, sequence, status, budget_min, grace_min, early_done_after_min, config, score_weight)
+       VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8)`,
+      [interviewId, p.phaseKey, seq++, p.budgetMin, p.graceMin, p.earlyDoneAfterMin, JSON.stringify(p.config), p.weight]
     );
-    if (s.isPrimary) primaryId = rows[0].id;
-    else contextIds.push(rows[0].id);
   }
-
-  const w = plan.phaseWeights || DEFAULT_PHASE_WEIGHTS;
-  const dsaConfig = snapshotDsaConfig(problem, primaryId, contextIds);
-  await client.query(
-    `INSERT INTO interview_phases (interview_id, phase_key, sequence, status, budget_min, grace_min, early_done_after_min, config, score_weight)
-     VALUES ($1, 'dsa', 1, 'pending', $2, $3, $4, $5, $6)`,
-    [interviewId, plan.dsaBudgetMin, plan.graceMin, plan.earlyDoneAfterMin, JSON.stringify(dsaConfig), w.dsa]
-  );
-  const puzzleConfig = snapshotPuzzleConfig(puzzles, plan.puzzleSelection);
-  await client.query(
-    `INSERT INTO interview_phases (interview_id, phase_key, sequence, status, grace_min, min_remaining_min, config, score_weight)
-     VALUES ($1, 'puzzle', 2, 'pending', 0, $2, $3, $4)`,
-    [interviewId, plan.puzzleMinRemainingMin, JSON.stringify(puzzleConfig), w.puzzle]
-  );
-  return { primarySubmissionId: primaryId };
 }
 
 // ─── Transitions ────────────────────────────────────────────────────────────
 
-/** Activates the dsa phase when the interview starts. Idempotent. */
+/**
+ * Activates the first pending phase that can run (choosing its random item, capping its time to what is left),
+ * skipping any that cannot. Shared by interview start and every later transition.
+ * Returns the key of the phase that became active, or null when nothing is left to run.
+ */
+async function activateNext(
+  client: PoolClient,
+  interviewId: string,
+  pending: PhaseRow[],
+  now: Date,
+  remainingTotalMin: number,
+  skipped: PhaseTransition["skipped"]
+): Promise<PhaseKey | null> {
+  for (const next of pending.slice().sort((a, b) => a.sequence - b.sequence)) {
+    const remainingForPhase = remainingTotalMin - CLOSE_RESERVE_MIN;
+    if (remainingForPhase < Math.max(1, next.minRemainingMin ?? 0)) {
+      await skipPhase(client, interviewId, next, "skipped_no_time", now);
+      skipped.push({ key: next.phaseKey, reason: "skipped_no_time" });
+      continue;
+    }
+    // The stage time the interviewer set, capped by what the interview has left.
+    const budget = Math.max(1, Math.min(next.budgetMin ?? Math.floor(remainingForPhase), Math.floor(remainingForPhase)));
+    let config: unknown = next.config;
+    let selectedPuzzleId: string | null = null;
+
+    if (next.phaseKey === "dsa") {
+      const cfg = next.config as DsaPhaseConfig;
+      const picked = selectDsaProblem(cfg.pool, `${interviewId}:dsa`, cfg.selection);
+      if (!picked) {
+        await skipPhase(client, interviewId, next, "skipped_no_pool", now);
+        skipped.push({ key: next.phaseKey, reason: "skipped_no_pool" });
+        continue;
+      }
+      config = { ...cfg, selected: { problemId: picked.problemId, title: picked.title, runbook: picked.runbook } } satisfies DsaPhaseConfig;
+      await logEvent(client, interviewId, "dsa", "problem_selected", { problemId: picked.problemId, title: picked.title });
+    } else if (next.phaseKey === "puzzle") {
+      const cfg = next.config as PuzzlePhaseConfig;
+      const picked = selectPuzzle(cfg.pool, budget, interviewId, cfg.selection);
+      if (!picked) {
+        await skipPhase(client, interviewId, next, "skipped_no_pool", now);
+        skipped.push({ key: next.phaseKey, reason: "skipped_no_pool" });
+        continue;
+      }
+      config = { ...cfg, selected: { puzzleId: picked.puzzleId, title: picked.title, runbook: picked.runbook } } satisfies PuzzlePhaseConfig;
+      selectedPuzzleId = picked.puzzleId;
+      await logEvent(client, interviewId, "puzzle", "puzzle_selected", { puzzleId: picked.puzzleId, title: picked.title });
+    }
+
+    await client.query(
+      `UPDATE interview_phases SET status = 'active', started_at = $2, budget_min = $3, selected_puzzle_id = $4, config = $5 WHERE id = $1`,
+      [next.id, now, budget, selectedPuzzleId, JSON.stringify(config)]
+    );
+    await logEvent(client, interviewId, next.phaseKey, "phase_start", { budgetMin: budget });
+    return next.phaseKey;
+  }
+  return null;
+}
+
+/** Activates the first stage when the interview starts. Idempotent. */
 export async function activateFirstPhase(interviewId: string, now: Date = new Date()): Promise<boolean> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query("SELECT id FROM interviews WHERE id = $1 FOR UPDATE", [interviewId]);
+    const { rows: iv } = await client.query("SELECT duration FROM interviews WHERE id = $1 FOR UPDATE", [interviewId]);
     const phases = await getPhases(interviewId, client);
-    const first = phases[0];
-    if (!first || phases.some((p) => p.status !== "pending")) {
+    if (iv.length === 0 || phases.length === 0 || phases.some((p) => p.status !== "pending")) {
       await client.query("ROLLBACK");
       return false;
     }
-    await client.query("UPDATE interview_phases SET status = 'active', started_at = $2 WHERE id = $1", [first.id, now]);
-    await logEvent(client, interviewId, first.phaseKey, "phase_start", { budgetMin: first.budgetMin });
+    await activateNext(client, interviewId, phases, now, iv[0].duration, []);
     await client.query("COMMIT");
     return true;
   } catch (err) {
@@ -227,7 +240,7 @@ export async function activateFirstPhase(interviewId: string, now: Date = new Da
 }
 
 /**
- * Completes the active phase and activates (or skips) the next one, in one transaction.
+ * Completes the active phase and activates (or skips) the next ones, in one transaction.
  * Returns null when there is no active phase (or it is not the expected one), which makes
  * concurrent callers safe: only one of them performs the transition.
  */
@@ -256,45 +269,19 @@ export async function advancePhase(
     const remainingTotalMin = Math.max(0, iv[0].duration - (now.getTime() - startedMs) / 60000);
     const elapsedMin = active.startedAt ? (now.getTime() - new Date(active.startedAt).getTime()) / 60000 : 0;
 
-    await client.query("UPDATE interview_phases SET status = 'completed', ended_at = $2, end_reason = $3 WHERE id = $1", [active.id, now, reason]);
+    // Each stage keeps its own scratchpad: snapshot it onto the finished phase, then start the next one empty.
+    await client.query(
+      `UPDATE interview_phases SET status = 'completed', ended_at = $2, end_reason = $3,
+         scratchpad = (SELECT COALESCE(scratchpad, '') FROM interviews WHERE id = $4) WHERE id = $1`,
+      [active.id, now, reason, interviewId]
+    );
+    await client.query("UPDATE interviews SET scratchpad = '' WHERE id = $1", [interviewId]);
     await logEvent(client, interviewId, active.phaseKey, "phase_end", { reason, elapsedMin: round1(elapsedMin) });
     if (reason === "forced") await logEvent(client, interviewId, active.phaseKey, "forced_transition", {});
 
     const transition: PhaseTransition = { from: active.phaseKey, to: null, reason, skipped: [] };
-    const pending = phases.filter((p) => p.status === "pending").sort((a, b) => a.sequence - b.sequence);
-
-    for (const next of pending) {
-      if (next.phaseKey === "puzzle") {
-        const cfg = next.config as PuzzlePhaseConfig;
-        const remainingForPuzzle = remainingTotalMin - CLOSE_RESERVE_MIN;
-        if (remainingForPuzzle < Math.max(1, next.minRemainingMin ?? 0)) {
-          await skipPhase(client, interviewId, next, "skipped_no_time", now);
-          transition.skipped.push({ key: "puzzle", reason: "skipped_no_time" });
-          continue;
-        }
-        const picked = selectPuzzle(cfg.pool, remainingForPuzzle, interviewId, cfg.selection);
-        if (!picked) {
-          await skipPhase(client, interviewId, next, "skipped_no_pool", now);
-          transition.skipped.push({ key: "puzzle", reason: "skipped_no_pool" });
-          continue;
-        }
-        const budget = Math.max(1, Math.min(picked.runbook.expectedMin, Math.floor(remainingForPuzzle)));
-        const newCfg: PuzzlePhaseConfig = { ...cfg, selected: { puzzleId: picked.puzzleId, title: picked.title, runbook: picked.runbook } };
-        await client.query(
-          `UPDATE interview_phases SET status = 'active', started_at = $2, budget_min = $3, grace_min = 0,
-             selected_puzzle_id = $4, config = $5 WHERE id = $1`,
-          [next.id, now, budget, picked.puzzleId, JSON.stringify(newCfg)]
-        );
-        await logEvent(client, interviewId, "puzzle", "puzzle_selected", { puzzleId: picked.puzzleId, title: picked.title });
-        await logEvent(client, interviewId, "puzzle", "phase_start", { budgetMin: budget });
-        transition.to = "puzzle";
-        break;
-      }
-      await client.query("UPDATE interview_phases SET status = 'active', started_at = $2 WHERE id = $1", [next.id, now]);
-      await logEvent(client, interviewId, next.phaseKey, "phase_start", { budgetMin: next.budgetMin });
-      transition.to = next.phaseKey;
-      break;
-    }
+    const pending = phases.filter((p) => p.status === "pending");
+    transition.to = await activateNext(client, interviewId, pending, now, remainingTotalMin, transition.skipped);
 
     await client.query("COMMIT");
     return transition;
@@ -320,7 +307,11 @@ export async function closePhasesOnEnd(interviewId: string, now: Date = new Date
     const phases = await getPhases(interviewId, client);
     for (const p of phases) {
       if (p.status === "active") {
-        await client.query("UPDATE interview_phases SET status = 'completed', ended_at = $2, end_reason = 'interview_end' WHERE id = $1", [p.id, now]);
+        await client.query(
+          `UPDATE interview_phases SET status = 'completed', ended_at = $2, end_reason = 'interview_end',
+             scratchpad = (SELECT COALESCE(scratchpad, '') FROM interviews WHERE id = $3) WHERE id = $1`,
+          [p.id, now, interviewId]
+        );
         await logEvent(client, interviewId, p.phaseKey, "phase_end", { reason: "interview_end" });
       } else if (p.status === "pending") {
         await skipPhase(client, interviewId, p, "interview_end", now);
@@ -360,4 +351,3 @@ export async function getScratchpad(interviewId: string): Promise<string> {
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
-export type { DsaPhaseConfig, PuzzlePhaseConfig };

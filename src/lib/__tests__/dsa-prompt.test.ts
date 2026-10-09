@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_AI_SETTINGS } from "../ai-settings";
 import { buildDsaReviewMessages, extractInterviewerNotes, numberLines, wrapCandidateData, type DsaPromptInput } from "../prompt/dsa-review";
 import { nextUnlockedHint, resolvePhase } from "../phase-engine";
-import { hints, phase, puzzleConfig, submissions } from "./fixtures";
+import { customFlow, dsaConfig, hints, partaConfig, phase, puzzleConfig, submissions } from "./fixtures";
 
 const startedAt = "2026-01-01T10:00:00.000Z";
 const at = (min: number) => new Date(new Date(startedAt).getTime() + min * 60000);
@@ -81,11 +81,10 @@ describe("puzzle phase prompt", () => {
     expect(s).toContain("never confirm or reveal");
     ["SECRET-TRACK-HASHMAP", "PARTIAL-PROBE", "def f(a, t)", "Given an array", "SECRET-RUBRIC", "HINT-ONE-TEXT"].forEach((x) => expect(s).not.toContain(x));
   });
-  it("carries only a factual DSA summary (duration, hints, weak answers)", () => {
+  it("carries only a factual summary of earlier stages (duration, hints, weak answers)", () => {
     const s = system(input({ phases: puzzlePhases(), now: at(13) }));
-    expect(s).toMatch(/lasted about 12 minute/);
-    expect(s).toContain("received 1 hint(s)");
-    expect(s).toContain("2 weak answer(s)");
+    expect(s).toContain("EARLIER STAGES");
+    expect(s).toMatch(/Part A evaluation: about 12 minute\(s\), 1 hint\(s\) given, 2 weak answer\(s\)/);
   });
   it("uses the puzzle opening instruction on an empty history", () => {
     expect(system(input({ phases: puzzlePhases(), now: at(13) }))).toContain("read the puzzle statement aloud once");
@@ -95,6 +94,57 @@ describe("puzzle phase prompt", () => {
     const s = system(input({ phases: puzzlePhases(), now: at(15), unlockedHint: nextUnlockedHint(sel, [], 3, 0) }));
     expect(s).toContain("PUZZLE-HINT-ONE");
     expect(s).not.toContain("HINT-TWO-TEXT");
+  });
+});
+
+describe("Part A flow (function by function, complexity, pseudocode)", () => {
+  it("uses the built-in runbook when none was plugged in", () => {
+    const s = system(input());
+    expect(s).toContain('PART A FLOW (runbook "Default Part A flow")');
+    expect(s).toMatch(/UNDERSTANDING, FUNCTION BY FUNCTION/);
+    expect(s).toMatch(/COMPLEXITY, FUNCTION BY FUNCTION/);
+    expect(s).toMatch(/pseudocode in the scratchpad/);
+  });
+  it("uses the plugged-in runbook's instructions and probes instead", () => {
+    const s = system(input({ phases: [phase({ config: { ...partaConfig, flow: customFlow } })] }));
+    expect(s).toContain('runbook "Strict drill"');
+    expect(s).toContain("CUSTOM-STEP");
+    expect(s).toContain("CUSTOM-PROBE");
+    expect(s).not.toContain("UNDERSTANDING, FUNCTION BY FUNCTION");
+  });
+});
+
+describe("DSA stage prompt (live problem)", () => {
+  const dsaPhases = (over: any = {}) => [
+    phase({ status: "completed", endedAt: at(12).toISOString() }),
+    phase({ id: "d", phaseKey: "dsa", sequence: 2, status: "active", startedAt: at(12).toISOString(), budgetMin: 20, config: dsaConfig, ...over }),
+  ];
+  it("has the chosen problem and its tracks but none of Part A's material", () => {
+    const s = system(input({ phases: dsaPhases(), now: at(14) }));
+    expect(s).toContain("DSA-STATEMENT");
+    expect(s).toContain("SECRET-DSA-TRACK");
+    ["SECRET-TRACK-HASHMAP", "PARTIAL-PROBE", "def f(a, t)", "Given an array", "SECRET-RUBRIC", "HINT-ONE-TEXT", "DSA-RUBRIC", "DSA-HINT-ONE"].forEach((x) => expect(s).not.toContain(x));
+  });
+  it("asks for the approach, then code in the scratchpad", () => {
+    const s = system(input({ phases: dsaPhases(), now: at(14) }));
+    expect(s).toContain('DSA FLOW (runbook "Default DSA flow")');
+    expect(s).toMatch(/APPROACH BY VOICE/);
+    expect(s).toMatch(/CODE IN THE SCRATCHPAD/);
+    expect(s).toContain("OPENING TURN");
+  });
+  it("shows the scratchpad code as candidate data", () => {
+    const s = system(input({ phases: dsaPhases(), now: at(14), scratchpad: "def run(a):\n    return 1", history: [{ role: "ai", text: "go" }, { role: "candidate", text: "ok" }] }));
+    expect(s).toContain("def run(a):");
+    expect(s).toContain('<<<CANDIDATE_DATA label="scratchpad">>>');
+  });
+  it("only ever includes the DSA problem's own unlocked hint", () => {
+    const hint = dsaConfig.selected!.runbook.hintLadder[0];
+    const s = system(input({ phases: dsaPhases(), now: at(16), unlockedHint: hint }));
+    expect(s).toContain("DSA-HINT-ONE");
+    expect(s).not.toContain("HINT-TWO-TEXT");
+  });
+  it("summarises the finished Part A stage factually", () => {
+    expect(system(input({ phases: dsaPhases(), now: at(14) }))).toContain("EARLIER STAGES");
   });
 });
 

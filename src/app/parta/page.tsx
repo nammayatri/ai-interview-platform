@@ -2,6 +2,6 @@
 
 import { ContentAdminPage } from "@/components/dsa/admin/ContentAdminPage";
 
-export default function DsaProblemsPage() {
-  return <ContentAdminPage kind="dsa" />;
+export default function PartAQuestionsPage() {
+  return <ContentAdminPage kind="parta" />;
 }
