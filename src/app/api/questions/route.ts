@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { pool } from "@/lib/db";
+import { requireRole } from "@/lib/rbac";
 
 export async function GET() {
   try {
@@ -24,11 +25,9 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-    const orgId = (session.user as any).orgId;
+    const auth = await requireRole(req, ["admin"]);
+    if (auth instanceof NextResponse) return auth;
+    const orgId = auth.user.orgId;
 
     const { name, role, level, roundType, questions } = await req.json();
 

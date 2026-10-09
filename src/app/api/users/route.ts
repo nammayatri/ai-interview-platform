@@ -26,7 +26,7 @@ export async function POST(req: Request) {
     if (typeof password !== "string" || password.length < 8) {
       return NextResponse.json({ error: "Password must be at least 8 characters" }, { status: 400 });
     }
-    const newRole = ["admin", "member"].includes(role) ? role : "member";
+    const newRole = ["admin", "interviewer", "member"].includes(role) ? role : "member";
 
     const existing = await pool.query("SELECT id FROM users WHERE LOWER(email) = $1", [cleanEmail]);
     if (existing.rows.length > 0) {

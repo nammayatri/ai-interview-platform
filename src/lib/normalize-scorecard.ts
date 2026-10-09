@@ -21,5 +21,8 @@ export function normalizeScorecard(raw: any) {
     })),
     proctoringNotes: raw.proctoringNotes ?? raw.proctoring_notes ?? "No issues detected.",
     coverage: raw.coverage ?? null,
+    // DSA Review only: per-phase rubric results and where each dimension score came from.
+    ...(raw.phases ? { phases: raw.phases } : {}),
+    ...(raw.dimensionSources ? { dimensionSources: raw.dimensionSources } : {}),
   };
 }

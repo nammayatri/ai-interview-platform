@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server";
 import { getInterview, addTranscriptEntry, getProctoringViolationCount, updateInterview, addProctoringEvent } from "@/lib/store";
-import { getAIResponse, stripThinking } from "@/lib/ai";
+import { getAIResponse, getDsaAIText, stripThinking } from "@/lib/ai";
 import { rateLimit } from "@/lib/rate-limit";
 import { canEndNow, getRemainingSeconds } from "@/lib/interview-time";
 import { cleanForTTS } from "@/lib/tts-text";
 import { validateAccessPost } from "@/lib/auth-check";
 import { pool } from "@/lib/db";
+import { stripMarkers } from "@/lib/phase-engine";
+import { finalizeDsaTurn, isDsaReview, prepareDsaTurn } from "@/lib/dsa-turn";
+import { finishInterview } from "@/lib/scoring/background";
 import { getTTSProvider } from "@/lib/providers";
 
 // Combined AI response + TTS in ONE endpoint
@@ -17,7 +20,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Too many requests" }, { status: 429 });
     }
 
-    const { interviewId, transcript, token, skipSave, tts } = await req.json();
+    const { interviewId, transcript, token, skipSave, tts, scratchpad, trigger } = await req.json();
     const ttsEnabled = tts !== false; // candidate can turn the AI voice off (text-only)
 
     if (!interviewId) {
@@ -61,6 +64,35 @@ export async function POST(req: Request) {
       }
     }
 
+    // DSA Review: phase-scoped prompt, markers and transitions are handled by lib/dsa-turn.ts
+    if (isDsaReview(interview)) {
+      const lastEntry = transcript?.length > 0 ? transcript[transcript.length - 1] : null;
+      const candidateText = lastEntry?.role === "candidate" ? lastEntry.text : null;
+      const prep = await prepareDsaTurn(interview, {
+        candidateText: skipSave ? null : candidateText,
+        skipSave: !!skipSave,
+        ephemeralText: skipSave ? candidateText : null,
+        trigger: trigger === "phase_open" ? "phase_open" : undefined,
+        scratchpad: typeof scratchpad === "string" ? scratchpad : undefined,
+      });
+      const aiRaw = await getDsaAIText(prep.messages);
+      const result = await finalizeDsaTurn(prep, aiRaw);
+      let audio: string | null = null;
+      let contentType: string | null = null;
+      if (ttsEnabled && result.text) {
+        try {
+          const ttsProvider = getTTSProvider();
+          const buf = await ttsProvider.synthesize(cleanForTTS(result.text) || result.text);
+          audio = buf.toString("base64");
+          contentType = ttsProvider.contentType;
+        } catch (err) {
+          console.warn("TTS failed:", (err as Error).message);
+        }
+      }
+      if (result.endInterview) await finishInterview(interviewId, interview.roundType);
+      return NextResponse.json({ audio, contentType, ...result });
+    }
+
     // Save candidate message (fire-and-forget — don't block AI call)
     if (!skipSave && transcript?.length > 0) {
       const lastEntry = transcript[transcript.length - 1];
@@ -80,7 +112,7 @@ export async function POST(req: Request) {
     if (aiWantsEnd && !hasEndSignal) {
       console.warn(`[AI] Ignored early [END_INTERVIEW] for ${interviewId} — ${getRemainingSeconds(interview)}s still remain`);
     }
-    const aiText = aiRaw.replace(/\[END_INTERVIEW\]/g, "").trim();
+    const aiText = stripMarkers(aiRaw);
 
     const cleanedText = stripThinking(aiText);
     const ttsText = cleanForTTS(cleanedText);
@@ -104,7 +136,7 @@ export async function POST(req: Request) {
 
     // The end signal must never be lost just because TTS failed
     if (hasEndSignal) {
-      await updateInterview(interviewId, { status: "completed", endedAt: new Date().toISOString() });
+      await finishInterview(interviewId, interview.roundType);
     }
 
     return NextResponse.json({

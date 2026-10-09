@@ -97,8 +97,7 @@ export default function TeamPage() {
     fetchUsers();
   };
 
-  const toggleRole = async (userId: string, currentRole: string) => {
-    const newRole = currentRole === "admin" ? "member" : "admin";
+  const changeRole = async (userId: string, newRole: string) => {
     await fetch(`/api/users/${userId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -186,7 +185,7 @@ export default function TeamPage() {
                       <div className="flex items-center gap-2">
                         <p className="text-sm font-medium text-gray-900 truncate">{user.name}</p>
                         <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
-                          user.role === "admin" ? "bg-purple-50 text-purple-600" : "bg-gray-50 text-gray-500"
+                          user.role === "admin" ? "bg-purple-50 text-purple-600" : user.role === "interviewer" ? "bg-indigo-50 text-indigo-600" : "bg-gray-50 text-gray-500"
                         }`}>
                           {user.role}
                         </span>
@@ -217,12 +216,16 @@ export default function TeamPage() {
                         >
                           {user.is_active ? "Deactivate" : "Activate"}
                         </button>
-                        <button
-                          onClick={() => toggleRole(user.id, user.role)}
-                          className="text-xs text-purple-600 border border-purple-200 hover:bg-purple-50 px-3 py-1.5 rounded-lg transition-colors"
+                        <select
+                          value={user.role}
+                          onChange={(e) => changeRole(user.id, e.target.value)}
+                          aria-label={`Role for ${user.name}`}
+                          className="text-xs text-purple-600 border border-purple-200 hover:bg-purple-50 px-2 py-1.5 rounded-lg transition-colors bg-white"
                         >
-                          {user.role === "admin" ? "Remove Admin" : "Make Admin"}
-                        </button>
+                          <option value="member">Member</option>
+                          <option value="interviewer">Interviewer</option>
+                          <option value="admin">Admin</option>
+                        </select>
                         <button
                           onClick={() => setDeleteTarget({id: user.id, name: user.name})}
                           className="text-xs text-red-500 hover:text-red-700 hover:bg-red-50 px-2 py-1.5 rounded-lg transition-colors"
@@ -296,8 +299,9 @@ export default function TeamPage() {
                   value={form.role}
                   onChange={(e) => setForm({ ...form, role: e.target.value })}
                 >
-                  <option value="member">Member</option>
-                  <option value="admin">Admin</option>
+                  <option value="member">Member (read only)</option>
+                  <option value="interviewer">Interviewer (creates interviews)</option>
+                  <option value="admin">Admin (authors content)</option>
                 </select>
 
                 <label className="block text-xs font-medium text-gray-600 mb-1">Temporary password</label>

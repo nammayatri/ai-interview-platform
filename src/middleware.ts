@@ -13,6 +13,8 @@ export const config = {
     "/dashboard/:path*",
     "/review/:path*",
     "/questions/:path*",
+    "/problems/:path*",
+    "/puzzles/:path*",
     "/compare/:path*",
     "/team/:path*",
     "/templates/:path*",

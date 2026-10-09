@@ -5,6 +5,9 @@ import { rateLimit } from "@/lib/rate-limit";
 import { canEndNow, getRemainingSeconds } from "@/lib/interview-time";
 import { validateAccessPost } from "@/lib/auth-check";
 import { pool } from "@/lib/db";
+import { finalizeDsaTurn, isDsaReview, prepareDsaTurn } from "@/lib/dsa-turn";
+import { getDsaAIText } from "@/lib/ai";
+import { finishInterview } from "@/lib/scoring/background";
 
 export async function POST(req: Request) {
   try {
@@ -12,7 +15,7 @@ export async function POST(req: Request) {
     if (!rateLimit(ip, 30, 60000)) {
       return NextResponse.json({ error: "Too many requests" }, { status: 429 });
     }
-    const { interviewId, transcript, token } = await req.json();
+    const { interviewId, transcript, token, scratchpad, trigger } = await req.json();
 
     if (!interviewId) {
       return NextResponse.json({ error: "Missing interviewId" }, { status: 400 });
@@ -56,6 +59,20 @@ export async function POST(req: Request) {
           timestamp: new Date().toISOString(),
         });
       }
+    }
+
+    // DSA Review: the server resolves the phase and builds the phase-scoped prompt from the database.
+    // For this round type only the last entry of the client transcript (the new candidate message) is used.
+    if (isDsaReview(interview)) {
+      const lastEntry = transcript?.length > 0 ? transcript[transcript.length - 1] : null;
+      const prep = await prepareDsaTurn(interview, {
+        candidateText: lastEntry?.role === "candidate" ? lastEntry.text : null,
+        trigger: trigger === "phase_open" ? "phase_open" : undefined,
+        scratchpad: typeof scratchpad === "string" ? scratchpad : undefined,
+      });
+      const result = await finalizeDsaTurn(prep, await getDsaAIText(prep.messages));
+      if (result.endInterview) await finishInterview(interviewId, interview.roundType);
+      return NextResponse.json(result);
     }
 
     // Save the latest candidate message if present in transcript

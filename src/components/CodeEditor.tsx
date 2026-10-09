@@ -23,11 +23,52 @@ const DEFAULT_CODE: Record<string, string> = {
 
 interface CodeEditorProps {
   language: string;
-  onCodeChange: (code: string) => void;
+  onCodeChange?: (code: string) => void;
   initialCode?: string;
+  /** Display-only: no toolbar, no run button, no editing (used to show a candidate's submitted code). */
+  readOnly?: boolean;
+  /** Called once Monaco has mounted (lets the caller fall back to plain text when the CDN is blocked). */
+  onReady?: () => void;
 }
 
-export default function CodeEditor({ language: initialLang, onCodeChange, initialCode }: CodeEditorProps) {
+// Monaco language ids for the names interviewers type into the submission form.
+const MONACO_LANG: Record<string, string> = {
+  "c++": "cpp", cpp: "cpp", "c#": "csharp", csharp: "csharp", js: "javascript", javascript: "javascript",
+  ts: "typescript", typescript: "typescript", python: "python", python3: "python", java: "java", go: "go", golang: "go",
+  rust: "rust", kotlin: "kotlin", swift: "swift", ruby: "ruby", scala: "scala", php: "php", sql: "sql",
+};
+
+export default function CodeEditor({ language: initialLang, onCodeChange = () => {}, initialCode, readOnly = false, onReady }: CodeEditorProps) {
+  if (readOnly) {
+    return (
+      <div className="h-full min-h-[160px] overflow-hidden rounded-lg border border-white/10 bg-[#1e1e1e]">
+        <Editor
+          height="100%"
+          language={MONACO_LANG[(initialLang || "").toLowerCase()] || "plaintext"}
+          value={initialCode || ""}
+          theme="vs-dark"
+          onMount={() => onReady?.()}
+          options={{
+            readOnly: true,
+            domReadOnly: true,
+            minimap: { enabled: false },
+            fontSize: 13,
+            lineNumbers: "on",
+            scrollBeyondLastLine: false,
+            automaticLayout: true,
+            wordWrap: "on",
+            contextmenu: false,
+            renderLineHighlight: "none",
+            padding: { top: 8 },
+          }}
+        />
+      </div>
+    );
+  }
+  return <EditableCodeEditor language={initialLang} onCodeChange={onCodeChange} initialCode={initialCode} />;
+}
+
+function EditableCodeEditor({ language: initialLang, onCodeChange, initialCode }: { language: string; onCodeChange: (code: string) => void; initialCode?: string }) {
   const [language, setLanguage] = useState(initialLang || "javascript");
   const [code, setCode] = useState(initialCode || DEFAULT_CODE[initialLang] || DEFAULT_CODE.javascript);
   const [output, setOutput] = useState("");

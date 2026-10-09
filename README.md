@@ -307,3 +307,16 @@ MIT
 <p align="center">
   <img src="https://readme-typing-svg.demolab.com?font=Inter&weight=500&size=14&duration=3000&pause=1000&color=9CA3AF&center=true&vCenter=true&random=false&width=400&height=25&lines=Built+with+Next.js+%2B+TypeScript+%2B+PostgreSQL;Open+source+%7C+MIT+License;Star+%E2%AD%90+if+you+find+this+useful!" alt="Footer" />
 </p>
+
+## DSA Review round
+
+A round type where the AI discusses a candidate's own HackerRank submission by voice, then optionally a puzzle.
+Run `migrations/003_dsa_review.sql` (after 001 and 002) to enable it.
+
+- **Roles**: admins author question banks, problems and puzzles; interviewers and admins create interviews; members are read-only.
+  Assign roles on the Team page (existing members cannot create interviews until promoted to interviewer).
+- **Authoring**: `/problems` and `/puzzles`. Each has a structured runbook (solution tracks, probes, hint ladder, rubric). Use "Paste runbook JSON" in the editor; examples in `docs/examples/`.
+- **Creating**: `/new` > Round > DSA Review. Attach the HackerRank submission, pick a puzzle pool and the phase plan.
+- **How it runs**: the server owns the phases (`src/lib/phase-engine.ts`, `phase-store.ts`). The AI only sees the current phase's material and at most one unlocked hint, and tags turns with `[ASSESS:...]`, `[HINT:n]`, `[PHASE_DONE]`, which the server parses and strips (`src/lib/dsa-turn.ts`).
+- **Scoring**: per-phase rubric credits are rolled up deterministically into the five dimensions (`src/lib/scoring/`).
+- **Tests**: `npm test`.

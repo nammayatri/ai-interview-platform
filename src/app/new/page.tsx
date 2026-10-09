@@ -3,10 +3,19 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { DashboardLayout } from "@/components/DashboardLayout";
+import {
+  DsaReviewSection,
+  dsaFormError,
+  dsaFormFields,
+  emptyDsaForm,
+  type DsaFormState,
+  type ProblemOption,
+  type PuzzleOption,
+} from "@/components/dsa/DsaReviewSection";
 
 const LEVELS = ["Intern", "Junior", "Mid", "Senior", "Staff", "Principal", "Manager", "Director"];
 const DURATIONS = [10, 15, 20, 30, 45, 60, 90, 120];
-const ROUND_TYPES = ["General", "Technical", "Behavioral", "System Design", "Coding", "HR", "Culture Fit", "Managerial", "Case Study", "Puzzle"];
+const ROUND_TYPES = ["General", "Technical", "Behavioral", "System Design", "Coding", "HR", "Culture Fit", "Managerial", "Case Study", "Puzzle", "DSA Review"];
 const CODING_LANGUAGES = ["JavaScript", "TypeScript", "Python", "Java", "C++", "Go", "Rust", "Haskell", "Kotlin", "Swift", "Ruby", "C#", "Scala", "SQL", "PHP"];
 const FOCUS_AREAS = [
   "Technical Skills", "Behavioral", "System Design", "Problem Solving",
@@ -59,6 +68,17 @@ export default function NewInterviewPage() {
   const [emailTemplates, setEmailTemplates] = useState<{ id: string; name: string; subject: string; description: string }[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [dsa, setDsa] = useState<DsaFormState>(emptyDsaForm());
+  const [problems, setProblems] = useState<ProblemOption[]>([]);
+  const [puzzles, setPuzzles] = useState<PuzzleOption[]>([]);
+  const isDsa = roundType === "DSA Review";
+  const role_ = (session?.user as any)?.role as string | undefined;
+  const canCreate = !role_ || role_ === "admin" || role_ === "interviewer";
+
+  useEffect(() => {
+    fetch("/api/problems").then((r) => r.json()).then((d) => { if (Array.isArray(d)) setProblems(d); }).catch(() => {});
+    fetch("/api/puzzles").then((r) => r.json()).then((d) => { if (Array.isArray(d)) setPuzzles(d); }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     fetch("/api/questions")
@@ -96,9 +116,16 @@ export default function NewInterviewPage() {
   const removeCandidate = (i: number) => setCandidates(prev => prev.length > 1 ? prev.filter((_, idx) => idx !== i) : prev);
   const updateCandidate = (i: number, field: string, value: string) => setCandidates(prev => prev.map((c, idx) => idx === i ? { ...c, [field]: value } : c));
 
-  const validCandidates = candidates.filter(c => c.email.trim() && c.email.includes("@"));
-  const hasContext = file || additionalContext.trim().length > 0 || selectedBankId;
-  const canSubmit = role && validCandidates.length > 0 && hasContext && !submitting;
+  // DSA Review: each candidate has their own submission, so bulk creation is not offered.
+  const validCandidates = (isDsa ? candidates.slice(0, 1) : candidates).filter(c => c.email.trim() && c.email.includes("@"));
+  const hasContext = isDsa || file || additionalContext.trim().length > 0 || selectedBankId;
+  const dsaError = isDsa ? dsaFormError(dsa, duration) : null;
+  const canSubmit = role && validCandidates.length > 0 && hasContext && !dsaError && !submitting;
+
+  const appendDsaFields = (formData: FormData) => {
+    if (!isDsa) return;
+    Object.entries(dsaFormFields(dsa, problems)).forEach(([k, v]) => formData.append(k, v));
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -125,6 +152,7 @@ export default function NewInterviewPage() {
         if (additionalContext.trim()) formData.append("additionalContext", additionalContext.trim());
         if (selectedTemplateId) formData.append("emailTemplateId", selectedTemplateId);
         if (file) formData.append("resume", file);
+        appendDsaFields(formData);
 
         const res = await fetch("/api/create-interview", { method: "POST", body: formData });
         const data = await res.json();
@@ -195,7 +223,12 @@ export default function NewInterviewPage() {
           <p className="text-sm text-gray-500 mt-1">Set up an AI-powered interview session for your candidate</p>
         </div>
 
-        {interviewLink ? (
+        {!canCreate ? (
+          <div className="card p-10 text-center">
+            <p className="text-lg font-semibold text-gray-900 mb-1">You can&apos;t create interviews</p>
+            <p className="text-sm text-gray-500">Your role is read-only. Ask an admin to make you an interviewer.</p>
+          </div>
+        ) : interviewLink ? (
           /* ── Success State ──────────────────────────────────────── */
           <div className="card p-10 text-center space-y-6 animate-scale-in relative overflow-hidden">
             {/* Subtle celebration dots */}
@@ -261,7 +294,7 @@ export default function NewInterviewPage() {
                   >
                     Copy All Links
                   </button>
-                  <button onClick={() => { setInterviewLink(""); setBulkResults([]); setFile(null); setRole(""); setCandidates([{email:"",name:"",phone:""}]); setAdditionalContext(""); setSelectedBankId(""); setSelectedTemplateId(""); }}
+                  <button onClick={() => { setInterviewLink(""); setBulkResults([]); setFile(null); setRole(""); setCandidates([{email:"",name:"",phone:""}]); setAdditionalContext(""); setSelectedBankId(""); setSelectedTemplateId(""); setDsa(emptyDsaForm()); }}
                     className="btn-primary flex-1">
                     Create More
                   </button>
@@ -298,7 +331,7 @@ export default function NewInterviewPage() {
               <p className="text-xs text-gray-400 text-center">No email template was selected — share the link manually.</p>
             )}
             <div className="flex gap-3">
-              <button onClick={() => { setInterviewLink(""); setBulkResults([]); setFile(null); setRole(""); setCandidates([{email:"",name:"",phone:""}]); setAdditionalContext(""); setSelectedBankId(""); setSelectedTemplateId(""); }} className="btn-primary flex-1">
+              <button onClick={() => { setInterviewLink(""); setBulkResults([]); setFile(null); setRole(""); setCandidates([{email:"",name:"",phone:""}]); setAdditionalContext(""); setSelectedBankId(""); setSelectedTemplateId(""); setDsa(emptyDsaForm()); }} className="btn-primary flex-1">
                 Create Another
               </button>
               <button
@@ -319,7 +352,7 @@ export default function NewInterviewPage() {
             <div className="card p-6 animate-fade-in-up border-l-4 border-l-indigo-500">
               <SectionHeader step={1} title="Candidate Information" subtitle={candidates.length > 1 ? `${candidates.length} candidates` : "Who are you interviewing?"} />
               <div className="space-y-4">
-                {candidates.map((c, i) => (
+                {(isDsa ? candidates.slice(0, 1) : candidates).map((c, i) => (
                   <div key={i} className={`grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr_auto] gap-3 ${i > 0 ? "pt-3 border-t border-gray-100" : ""}`}>
                     <div>
                       {i === 0 && <label className="label">Email <span className="text-red-400">*</span></label>}
@@ -337,7 +370,7 @@ export default function NewInterviewPage() {
                         placeholder="+91 98765 43210" className="input-field" />
                     </div>
                     <div className={i === 0 ? "mt-6" : ""}>
-                      {candidates.length > 1 && (
+                      {candidates.length > 1 && !isDsa && (
                         <button type="button" onClick={() => removeCandidate(i)}
                           className="p-2 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition">
                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -348,13 +381,14 @@ export default function NewInterviewPage() {
                     </div>
                   </div>
                 ))}
-                <button type="button" onClick={addCandidate}
+                {isDsa && <p className="text-xs text-gray-500">DSA Review is created one candidate at a time, because each candidate has a different submission.</p>}
+                {!isDsa && <button type="button" onClick={addCandidate}
                   className="flex items-center gap-2 text-sm text-indigo-600 hover:text-indigo-800 transition">
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
                   </svg>
                   Add Another Candidate
-                </button>
+                </button>}
                 <div>
                   <label className="label">Role <span className="text-red-400">*</span></label>
                   <input type="text" required value={role} onChange={(e) => setRole(e.target.value)}
@@ -501,12 +535,16 @@ export default function NewInterviewPage() {
               </div>
             </div>
 
+            {isDsa && (
+              <DsaReviewSection state={dsa} onChange={setDsa} problems={problems} puzzles={puzzles} duration={duration} startStep={3} />
+            )}
+
             {/* Section 3: Context & Questions */}
             <div className="card p-6 animate-fade-in-up delay-2 border-l-4 border-l-emerald-500">
-              <SectionHeader step={3} title="Interview Context" subtitle="Provide context so the AI asks better questions. At least one of resume, context, or question bank is required." />
+              <SectionHeader step={isDsa ? 4 : 3} title={isDsa ? "Interviewer Notes" : "Interview Context"} subtitle={isDsa ? "Optional notes for the AI interviewer. The resume is optional and is only used for scoring context." : "Provide context so the AI asks better questions. At least one of resume, context, or question bank is required."} />
               <div className="space-y-4">
                 {/* Question Bank */}
-                {questionBanks.length > 0 && (
+                {questionBanks.length > 0 && !isDsa && (
                   <div>
                     <label className="label">
                       Question Bank <span className="text-gray-400 font-normal">(optional)</span>

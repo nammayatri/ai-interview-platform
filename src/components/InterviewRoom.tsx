@@ -7,6 +7,11 @@ import { isTalkShortcut } from "@/lib/push-to-talk";
 import { AudioRecorder } from "./AudioRecorder";
 import { ScreenShare } from "./ScreenShare";
 import Proctoring from "./Proctoring";
+import { useDsaRoom, type PhaseTransitionFromServer } from "./dsa/useDsaRoom";
+import { ProblemPanel } from "./dsa/ProblemPanel";
+import { PuzzlePanel } from "./dsa/PuzzlePanel";
+import { Scratchpad } from "./dsa/Scratchpad";
+import { PhaseHeader } from "./dsa/PhaseHeader";
 
 interface TranscriptEntry {
   role: "ai" | "candidate";
@@ -23,6 +28,7 @@ interface InterviewData {
   candidateName: string;
   duration: number; // in minutes
   startedAt?: string;
+  roundType?: string;
 }
 
 interface ProctoringAlert {
@@ -212,6 +218,19 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   const activeAbortRef = useRef<AbortController | null>(null);
   const activeReaderRef = useRef<ReadableStreamDefaultReader | null>(null);
 
+  // ─── DSA Review: server-owned phases; the client only displays and reacts ───
+  const isDsa = interviewData?.roundType === "DSA Review";
+  const dsa = useDsaRoom({ interviewId, tokenRef, enabled: isDsa && isStarted });
+  const dsaRef = useRef(dsa);
+  dsaRef.current = dsa;
+  const isDsaRef = useRef(false);
+  isDsaRef.current = isDsa;
+  const transcriptRef = useRef<TranscriptEntry[]>([]);
+  transcriptRef.current = transcript;
+  const getAIResponseRef = useRef<(t: TranscriptEntry[], o?: { skipSave?: boolean; trigger?: "phase_open" }) => Promise<void>>();
+  const phaseTransitionRef = useRef<PhaseTransitionFromServer | null>(null);
+  const needsPhaseOpenRef = useRef(false);
+
   const supportsFullscreen = typeof document !== "undefined" && typeof document.documentElement.requestFullscreen === "function";
 
   // If browser doesn't support fullscreen, skip the prompt
@@ -268,6 +287,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
           return;
         }
         setInterviewData(interview);
+        if (interview.roundType === "DSA Review") dsaRef.current.load(interview, { initialScratchpad: true });
 
         // Resume interview if already started (in_progress OR has startedAt)
         const hasStarted = interview.status === "in_progress" || interview.startedAt || (interview.transcript?.length > 0);
@@ -291,6 +311,12 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
             }
             window.location.href = `/completed/${interviewId}?token=${tokenRef.current}`;
             return;
+          }
+
+          // DSA Review: if the active phase has not been opened yet (reload between phases), open it after media is ready
+          if (interview.roundType === "DSA Review") {
+            const activePhase = interview.phases?.find((p: any) => p.status === "active");
+            needsPhaseOpenRef.current = !!activePhase && !(interview.transcript || []).some((t: any) => t.phaseKey === activePhase.phaseKey);
           }
 
           // Restore transcript from DB
@@ -366,6 +392,10 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         if (needsResumeRef.current) {
           needsResumeRef.current = false;
           console.log("[Interview] Media ready — resuming STT...");
+          if (needsPhaseOpenRef.current) {
+            needsPhaseOpenRef.current = false;
+            getAIResponseRef.current?.(transcriptRef.current, { trigger: "phase_open" });
+          }
           // Small delay to ensure everything is wired up
           setTimeout(() => stt.start(), 500);
         }
@@ -504,6 +534,8 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
             transcript,
             token: tokenRef.current,
             systemNote: "Time is up. Please wrap up and say goodbye to the candidate.",
+            // DSA Review: the server builds the closing turn from its own state; no candidate message to save
+            ...(isDsaRef.current ? { trigger: "phase_open" } : {}),
           }),
         });
         const { text } = await res.json();
@@ -616,7 +648,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   speakTextRef.current = speakText;
 
   const getAIResponse = useCallback(
-    async (currentTranscript: TranscriptEntry[], options?: { skipSave?: boolean }) => {
+    async (currentTranscript: TranscriptEntry[], options?: { skipSave?: boolean; trigger?: "phase_open" }) => {
       if (isProcessingRef.current) {
         console.warn("[AI] Already processing, skipping");
         return;
@@ -651,7 +683,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         const res = await fetch("/api/ai-speak-stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ interviewId, transcript: currentTranscript, token: tokenRef.current, skipSave: options?.skipSave, tts: aiVoiceRef.current }),
+          body: JSON.stringify({ interviewId, transcript: currentTranscript, token: tokenRef.current, skipSave: options?.skipSave, tts: aiVoiceRef.current, ...dsaTurnFields(options?.trigger) }),
           signal: abortController.signal,
         });
 
@@ -660,9 +692,11 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
           const fallbackRes = await fetch("/api/ai-speak", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ interviewId, transcript: currentTranscript, token: tokenRef.current, skipSave: options?.skipSave, tts: aiVoiceRef.current }),
+            body: JSON.stringify({ interviewId, transcript: currentTranscript, token: tokenRef.current, skipSave: options?.skipSave, tts: aiVoiceRef.current, ...dsaTurnFields(options?.trigger) }),
           });
           const data = await fallbackRes.json();
+          if (data.phase) dsaRef.current.applyServerPhase(data.phase);
+          if (data.phaseTransition && !data.endInterview) phaseTransitionRef.current = data.phaseTransition;
           if (data.text) {
             setTranscript((prev) => [...prev, { role: "ai", text: data.text, timestamp: Date.now() }]);
             if (data.audio) {
@@ -743,6 +777,8 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
               if (data.type === "audio_skip") { skippedIdxs.add(data.idx); playNext(); }
               if (data.error) { console.error("[AI] Server error:", data.error); serverLog("error", `SSE error: ${data.error}`, interviewId); setAiError(true); }
               if (data.type === "done") {
+                if (data.phase) dsaRef.current.applyServerPhase(data.phase);
+                if (data.phaseTransition && !data.endInterview) phaseTransitionRef.current = data.phaseTransition;
                 if (data.fullText) { setTranscript((prev) => { const u = [...prev]; if (u.length > 0 && u[u.length-1].role === "ai") u[u.length-1] = { ...u[u.length-1], text: data.fullText }; return u; }); }
                 // AI decided to end the interview — redirect after TTS finishes
                 if (data.endInterview) {
@@ -770,6 +806,8 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       } catch (err) {
         if ((err as Error)?.name === "AbortError") {
           console.log("[AI] Request aborted (superseded or ended)");
+          // The server may have moved to the next phase before the stream was cut; re-sync shortly.
+          if (isDsaRef.current) setTimeout(() => syncPhaseRef.current?.(), 2500);
         } else {
           console.error("[AI] Response failed:", err);
           serverLog("error", "AI response failed", interviewId, { error: String(err) });
@@ -785,11 +823,46 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         if (generationRef.current === thisGeneration) {
           isProcessingRef.current = false;
           setIsAIThinking(false);
+          const pendingTransition = phaseTransitionRef.current;
+          if (pendingTransition) {
+            phaseTransitionRef.current = null;
+            setTimeout(() => handlePhaseTransitionRef.current?.(pendingTransition), 0);
+          }
         }
       }
     },
     [interviewId, speakText]
   );
+  getAIResponseRef.current = getAIResponse;
+
+  // Extra request fields for DSA Review turns: the latest scratchpad, and the phase-open trigger.
+  function dsaTurnFields(trigger?: "phase_open") {
+    if (!isDsaRef.current) return {};
+    return { scratchpad: dsaRef.current.scratchpadRef.current, ...(trigger ? { trigger } : {}) };
+  }
+
+  // After a phase change reported by the server: swap the panel, then ask for the new phase's opening turn.
+  const handlePhaseTransitionRef = useRef<(t: PhaseTransitionFromServer) => Promise<void>>();
+  handlePhaseTransitionRef.current = async (t) => {
+    await dsaRef.current.refresh();
+    if (isEndingRef.current || t.opened) return;
+    getAIResponseRef.current?.(transcriptRef.current, { trigger: "phase_open" });
+  };
+
+  // Poll (60s) and post-abort re-sync: picks up transitions the AI turn did not report (e.g. a forced advance).
+  const syncPhaseRef = useRef<() => Promise<void>>();
+  syncPhaseRef.current = async () => {
+    if (isEndingRef.current) return;
+    const r = await dsaRef.current.refresh();
+    if (r?.changed && !isProcessingRef.current && !phaseTransitionRef.current) {
+      getAIResponseRef.current?.(transcriptRef.current, { trigger: "phase_open" });
+    }
+  };
+  useEffect(() => {
+    if (!isDsa || !isStarted) return;
+    const id = setInterval(() => syncPhaseRef.current?.(), 60000);
+    return () => clearInterval(id);
+  }, [isDsa, isStarted]);
 
   // Send a typed chat message — routes through the same pipeline as STT
   const sendChatMessage = useCallback(() => {
@@ -912,6 +985,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token: tokenRef.current }),
       });
+      if (interviewData?.roundType === "DSA Review") await dsaRef.current.refresh();
     } catch (err) {
       console.error("Failed to start interview:", err);
     }
@@ -1270,6 +1344,15 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
                 <span className="text-green-400">&#10003;</span>
                 Keep your ID ready if asked for verification
               </li>
+              {isDsa && (
+                <li className="flex items-start gap-2">
+                  <span className="text-green-400">&#10003;</span>
+                  <span>
+                    This round is a conversation about your own HackerRank submission, followed by a short puzzle if time allows. You will see the problem
+                    and your code on screen but cannot edit or run it. Use the scratchpad for notes or pseudocode; it is typed only.
+                  </span>
+                </li>
+              )}
             </ul>
           </div>
           <div className="mt-6 space-y-3">
@@ -1485,12 +1568,40 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         </div>
       </div>
 
+      {isDsa && (
+        <div className="px-2 pt-2 sm:px-3">
+          <PhaseHeader
+            phaseKey={dsa.active ? dsa.active.phaseKey : null}
+            title={dsa.active ? (dsa.active.phaseKey === "puzzle" ? dsa.active.selected?.title || "Puzzle" : dsa.active.problemTitle || "") : ""}
+            phaseRemainingSec={dsa.active ? dsa.phaseRemainingSec : null}
+            totalRemainingSec={remainingSeconds}
+          />
+        </div>
+      )}
+
       {/* Main Content */}
-      <div className="flex flex-col lg:flex-row flex-1 gap-2 sm:gap-3 overflow-hidden p-2 sm:p-3">
-        {/* Left: Video + AI Avatar */}
-        <div className="flex flex-[5] flex-col gap-2 sm:gap-3">
+      <div className={`flex flex-col lg:flex-row flex-1 gap-2 sm:gap-3 p-2 sm:p-3 ${isDsa ? "overflow-y-auto lg:overflow-hidden" : "overflow-hidden"}`}>
+        {/* Left: (DSA Review: problem / puzzle panel) + Video + AI Avatar */}
+        <div className={`flex ${isDsa ? "flex-[11] min-h-0" : "flex-[5]"} flex-col gap-2 sm:gap-3`}>
+          {isDsa && (
+            <div className="flex min-h-[320px] flex-[3] lg:min-h-0">
+              {dsa.active?.phaseKey === "puzzle" && dsa.active.selected ? (
+                <PuzzlePanel title={dsa.active.selected.title} statementMd={dsa.active.selected.runbook.statementMd} />
+              ) : dsa.dsaPhase?.runbook && dsa.active ? (
+                <ProblemPanel
+                  title={dsa.dsaPhase.problemTitle || "Problem"}
+                  statementMd={dsa.dsaPhase.runbook.statementMd}
+                  submission={dsa.submissions.find((x) => x.isPrimary)}
+                />
+              ) : (
+                <div className="glass flex flex-1 items-center justify-center rounded-2xl p-6 text-sm text-zinc-400">
+                  {isStarted ? "Wrapping up the interview…" : "The problem will appear here when the interview starts."}
+                </div>
+              )}
+            </div>
+          )}
           {/* Video Feed */}
-          <div className="relative flex-[3] min-h-[150px] sm:min-h-[200px] lg:min-h-0 overflow-hidden rounded-xl sm:rounded-2xl border border-white/5 bg-zinc-900">
+          <div className={`relative ${isDsa ? "flex-[1] min-h-[130px] lg:max-h-[200px]" : "flex-[3] min-h-[150px] sm:min-h-[200px]"} lg:min-h-0 overflow-hidden rounded-xl sm:rounded-2xl border border-white/5 bg-zinc-900`}>
             <video
               ref={videoCallbackRef}
               autoPlay
@@ -1582,8 +1693,13 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
           )}
         </div>
 
-        {/* Right: Live Transcript + Screen Share */}
-        <div className="flex flex-[3] flex-col gap-3 min-h-0">
+        {/* Right: (DSA Review: scratchpad) + Live Transcript + Screen Share */}
+        <div className={`flex ${isDsa ? "flex-[9]" : "flex-[3]"} flex-col gap-3 min-h-0`}>
+          {isDsa && (
+            <div className="flex min-h-[160px] flex-[2] lg:min-h-0">
+              <Scratchpad interviewId={interviewId} token={tokenRef.current} value={dsa.scratchpad} onChange={dsa.setScratchpad} />
+            </div>
+          )}
           {/* Screen Share Status */}
           {screenSharing && (
             <div className="glass rounded-2xl px-3 py-2 hidden lg:flex items-center gap-2">
@@ -1594,7 +1710,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
               <span className="text-xs text-green-400">Screen sharing active</span>
             </div>
           )}
-          <div className="glass flex-1 flex flex-col rounded-2xl min-h-0 relative">
+          <div className={`glass ${isDsa ? "flex-[3] min-h-[220px] lg:min-h-0" : "flex-1"} flex flex-col rounded-2xl min-h-0 relative`}>
             <div className="flex-1 overflow-y-auto p-4 relative" ref={transcriptScrollRef} onScroll={handleTranscriptScroll}>
             <h3 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5">

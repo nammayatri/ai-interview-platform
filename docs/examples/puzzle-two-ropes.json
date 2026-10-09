@@ -1,0 +1,36 @@
+{
+  "title": "Two ropes",
+  "difficulty": "medium",
+  "tags": [
+    "reasoning"
+  ],
+  "runbook": {
+    "statementMd": "You have two ropes. Each takes exactly sixty minutes to burn, but they burn unevenly. How do you measure forty five minutes?",
+    "acceptedAnswers": [
+      "Light the first rope at both ends and the second at one end. When the first finishes, 30 minutes have passed; light the other end of the second, which then burns out 15 minutes later."
+    ],
+    "expectedMin": 6,
+    "hintLadder": [
+      {
+        "order": 1,
+        "text": "What happens if you light a rope at both ends?",
+        "notBeforeMin": 2,
+        "scoreDiscount": 0.1
+      }
+    ],
+    "rubric": [
+      {
+        "id": "both_ends",
+        "text": "Realised that lighting both ends halves the burn time",
+        "weight": 2,
+        "mapsTo": "problemSolving"
+      },
+      {
+        "id": "justify",
+        "text": "Justified the answer step by step",
+        "weight": 1,
+        "mapsTo": "communication"
+      }
+    ]
+  }
+}

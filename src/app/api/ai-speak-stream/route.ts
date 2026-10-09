@@ -6,6 +6,9 @@ import { pool } from "@/lib/db";
 import { getTTSProvider } from "@/lib/providers";
 import { canEndNow, getRemainingSeconds } from "@/lib/interview-time";
 import { cleanForTTS } from "@/lib/tts-text";
+import { stripMarkers } from "@/lib/phase-engine";
+import { finalizeDsaTurn, isDsaReview, prepareDsaTurn, type DsaTurnPrep } from "@/lib/dsa-turn";
+import { finishInterview } from "@/lib/scoring/background";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -17,7 +20,7 @@ export async function POST(req: Request) {
       return new Response(JSON.stringify({ error: "Too many requests" }), { status: 429 });
     }
 
-    const { interviewId, transcript, token, skipSave, tts } = await req.json();
+    const { interviewId, transcript, token, skipSave, tts, scratchpad, trigger } = await req.json();
     const ttsEnabled = tts !== false; // candidate can turn the AI voice off (text-only)
     if (!interviewId) {
       return new Response(JSON.stringify({ error: "Missing interviewId" }), { status: 400 });
@@ -60,18 +63,33 @@ export async function POST(req: Request) {
       }
     }
 
-    // Save candidate message (fire-and-forget)
-    if (!skipSave && transcript?.length > 0) {
-      const lastEntry = transcript[transcript.length - 1];
-      if (lastEntry.role === "candidate" && lastEntry.text) {
-        addTranscriptEntry(interviewId, {
-          role: "candidate", text: lastEntry.text, timestamp: new Date().toISOString(),
-        }).catch(() => {});
+    // DSA Review: the server owns the phase, the history and the prompt (see lib/dsa-turn.ts)
+    let dsaPrep: DsaTurnPrep | null = null;
+    let aiMessages: { role: string; content: string }[];
+    if (isDsaReview(interview)) {
+      const lastEntry = transcript?.length > 0 ? transcript[transcript.length - 1] : null;
+      const candidateText = lastEntry?.role === "candidate" ? lastEntry.text : null;
+      dsaPrep = await prepareDsaTurn(interview, {
+        candidateText: skipSave ? null : candidateText,
+        skipSave: !!skipSave,
+        ephemeralText: skipSave ? candidateText : null,
+        trigger: trigger === "phase_open" ? "phase_open" : undefined,
+        scratchpad: typeof scratchpad === "string" ? scratchpad : undefined,
+      });
+      aiMessages = dsaPrep.messages;
+    } else {
+      // Save candidate message (fire-and-forget)
+      if (!skipSave && transcript?.length > 0) {
+        const lastEntry = transcript[transcript.length - 1];
+        if (lastEntry.role === "candidate" && lastEntry.text) {
+          addTranscriptEntry(interviewId, {
+            role: "candidate", text: lastEntry.text, timestamp: new Date().toISOString(),
+          }).catch(() => {});
+        }
       }
+      // Build AI messages using full interview prompt
+      aiMessages = buildInterviewPrompt(interview, transcript || interview.transcript);
     }
-
-    // Build AI messages using full interview prompt
-    const aiMessages = buildInterviewPrompt(interview, transcript || interview.transcript);
 
     // Stream AI response + TTS pipeline
     const encoder = new TextEncoder();
@@ -154,7 +172,7 @@ export async function POST(req: Request) {
           const ttsPromises: Promise<void>[] = [];
 
           const processSentence = (sentence: string) => {
-            const cleaned = stripThinking(sentence).replace(/\[END_INTERVIEW\]/g, "").trim();
+            const cleaned = stripMarkers(stripThinking(sentence));
             if (!cleaned) return;
             const idx = sentenceIdx++;
 
@@ -223,6 +241,25 @@ export async function POST(req: Request) {
           await Promise.all(ttsPromises);
           console.log(`[Stream] TTS done for ${interviewId} in ${Date.now() - startTime}ms total`);
 
+          if (dsaPrep) {
+            // Parse and apply markers (assess / hint / phase done / end), save the clean AI entry
+            const result = await finalizeDsaTurn(dsaPrep, fullText);
+            if (result.endInterview) {
+              console.log(`[Stream] AI ended DSA interview ${interviewId}`);
+              await finishInterview(interviewId, interview.roundType);
+            }
+            safeEnqueue(encoder.encode(`data: ${JSON.stringify({
+              type: "done",
+              fullText: result.text,
+              endInterview: result.endInterview,
+              phase: result.phase,
+              phaseTransition: result.phaseTransition,
+              hintUsed: result.hintUsed,
+            })}\n\n`));
+            safeClose();
+            return;
+          }
+
           // Check for [END_INTERVIEW] signal — AI decided to close
           const aiWantsEnd = fullText.includes("[END_INTERVIEW]");
           // Server-side guard: ignore an early end signal — the AI may only close in the final minutes.
@@ -230,7 +267,7 @@ export async function POST(req: Request) {
           if (aiWantsEnd && !hasEndSignal) {
             console.warn(`[Stream] Ignored early [END_INTERVIEW] for ${interviewId} — ${getRemainingSeconds(interview)}s still remain`);
           }
-          const cleanedFull = stripThinking(fullText).replace(/\[END_INTERVIEW\]/g, "").trim();
+          const cleanedFull = stripMarkers(stripThinking(fullText));
 
           if (cleanedFull) {
             await addTranscriptEntry(interviewId, {
@@ -241,37 +278,7 @@ export async function POST(req: Request) {
           // If AI signaled end, mark interview as completed + trigger scorecard
           if (hasEndSignal) {
             console.log(`[Stream] AI ended interview ${interviewId}`);
-            // Mark completed + auto-score in background
-            import("@/lib/store").then(async ({ updateInterview, getInterview }) => {
-              await updateInterview(interviewId, { status: "completed", endedAt: new Date().toISOString() });
-              // Generate scorecard after 3s delay (let transcript save finish)
-              setTimeout(async () => {
-                try {
-                  const { startScoring, completeScoring, failScoring } = await import("@/lib/scoring-tracker");
-                  const { generateScorecard } = await import("@/lib/ai");
-                  const { normalizeScorecard } = await import("@/lib/normalize-scorecard");
-                  const freshInterview = await getInterview(interviewId);
-                  if (freshInterview && freshInterview.transcript.length > 0 && !freshInterview.scorecard) {
-                    if (await startScoring(interviewId)) {
-                      const raw = await generateScorecard(freshInterview);
-                      const { parseScorecardJSON } = await import("@/lib/parse-scorecard");
-                      let parsed;
-                      try { parsed = parseScorecardJSON(raw); } catch (parseErr) {
-                        console.error(`[Stream] Scorecard parse failed for ${interviewId}:`, parseErr);
-                      }
-                      if (parsed) {
-                        const scorecard = normalizeScorecard(parsed);
-                        await updateInterview(interviewId, { scorecard });
-                        completeScoring(interviewId);
-                        console.log(`[Stream] Scorecard generated for ${interviewId}`);
-                      }
-                    }
-                  }
-                } catch (err) {
-                  console.error(`[Stream] Scorecard failed for ${interviewId}:`, err);
-                }
-              }, 3000);
-            }).catch(() => {});
+            await finishInterview(interviewId, interview.roundType);
           }
 
           safeEnqueue(encoder.encode(`data: ${JSON.stringify({ type: "done", fullText: cleanedFull, endInterview: hasEndSignal })}\n\n`));

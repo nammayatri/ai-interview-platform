@@ -1,11 +1,8 @@
 import { NextResponse } from "next/server";
 import { getInterview, updateInterview } from "@/lib/store";
-import { generateScorecard } from "@/lib/ai";
 import { startScoring, completeScoring, failScoring } from "@/lib/scoring-tracker";
-import { normalizeScorecard } from "@/lib/normalize-scorecard";
-import { parseScorecardJSON } from "@/lib/parse-scorecard";
-import { calculateOverall, calculateRecommendation } from "@/lib/scorecard-calc";
-import { getOrgAISettings } from "@/lib/ai-settings";
+import { buildScorecard } from "@/lib/scoring/run-scoring";
+import { closePhasesOnEnd, getPhases } from "@/lib/phase-store";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 
@@ -44,22 +41,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Scoring already in progress" }, { status: 409 });
     }
 
-    const scorecardRaw = await generateScorecard(interview);
-    const parsed = parseScorecardJSON(scorecardRaw);
-
-    // Server-side compute overall + recommendation (deterministic, auditable)
-    const dimScores = {
-      technicalDepth: parsed.technicalDepth ?? 3,
-      communication: parsed.communication ?? 3,
-      problemSolving: parsed.problemSolving ?? 3,
-      domainKnowledge: parsed.domainKnowledge ?? 3,
-      cultureFit: parsed.cultureFit ?? 3,
-    };
-    const orgSettings = await getOrgAISettings((interview as any).orgId);
-    parsed.overall = calculateOverall(dimScores, interview.role);
-    parsed.recommendation = calculateRecommendation(parsed.overall, dimScores, orgSettings);
-
-    const scorecard = normalizeScorecard(parsed);
+    // A rescore on an interview that is still open closes its phases first so they can be scored.
+    if (interview.roundType === "DSA Review") {
+      await closePhasesOnEnd(interviewId);
+      interview.phases = await getPhases(interviewId);
+    }
+    const scorecard = await buildScorecard(interview);
 
     await updateInterview(interviewId, {
       scorecard,
