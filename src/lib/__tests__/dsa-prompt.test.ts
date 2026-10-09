@@ -18,18 +18,24 @@ function input(over: Partial<DsaPromptInput> & { now?: Date; phases?: any[] } = 
 const system = (i: DsaPromptInput) => buildDsaReviewMessages(i)[0].content;
 
 describe("DSA phase prompt", () => {
-  it("contains the problem, the numbered code, tracks and the probes for the submission outcome only", () => {
+  it("contains the problem, the numbered code and the tracks, and tells the AI nobody said whether the code works", () => {
     const s = system(input());
     expect(s).toContain("Given an array, return indices");
     expect(s).toMatch(/1 \| def f\(a, t\):/);
     expect(s).toContain("SECRET-TRACK-HASHMAP");
-    expect(s).toContain("PARTIAL-PROBE");
-    expect(s).not.toContain("PASSED-PROBE");
-    expect(s).not.toContain("FAILED-PROBE");
+    expect(s).toContain("Nobody has told you whether it works");
+    expect(s).not.toMatch(/outcome|HackerRank|tests passed/i);
   });
-  it("lists context submissions by title and outcome only", () => {
+  it("offers every probe group, labelled by what the AI sees in the code", () => {
     const s = system(input());
-    expect(s).toContain("Other Problem: passed");
+    expect(s).toContain("If the code works and is correct:");
+    expect(s).toContain("If the code does not work or does not run:");
+    ["PASSED-PROBE", "PARTIAL-PROBE", "FAILED-PROBE"].forEach((p) => expect(s).toContain(p));
+  });
+  it("lists context submissions by title only", () => {
+    const s = system(input());
+    expect(s).toContain("- Other Problem");
+    expect(s).not.toContain("Other Problem: passed");
     expect(s).not.toContain("CONTEXT-CODE-SHOULD-NOT-APPEAR");
   });
   it("never contains locked hints, rubric criteria or any puzzle material", () => {

@@ -128,15 +128,12 @@ function phaseTimeNote(phase: PhaseRow, res: PhaseResolution): string {
 function primarySubmissionBlock(subs: Submission[], cfg: PartAPhaseConfig): { primary: Submission | undefined; block: string } {
   const primary = subs.find((s) => s.id === cfg.primarySubmissionId) || subs.find((s) => s.isPrimary);
   if (!primary) return { primary, block: "No submission is available." };
-  const tests = primary.testsTotal !== null ? `, tests passed ${primary.testsPassed ?? "?"}/${primary.testsTotal}` : "";
-  const score = primary.score !== null ? `, HackerRank score ${primary.score}` : "";
   const notes = primary.notes ? `\nInterviewer note on this submission: ${primary.notes}` : "";
-  const block = `PRIMARY SUBMISSION (${primary.language || "language unknown"}): outcome ${primary.outcome.toUpperCase()}${score}${tests}.${notes}
+  const block = `THE CANDIDATE'S OWN SUBMISSION${primary.language ? ` (${primary.language})` : ""}. Nobody has told you whether it works: read it yourself and judge whether it is correct, complete and optimal.${notes}
 ${wrapCandidateData("submitted code, line-numbered", numberLines(primary.code))}`;
   return { primary, block };
 }
 
-/** The steps come from the interview runbook plugged into this stage (built-in default when none was chosen). */
 function flowSection(phase: PhaseRow, label: string): string {
   const flow = phaseFlow(phase);
   const probes = flow.probes.length ? `\nEXTRA PROBES YOU MAY USE: ${flow.probes.join(" | ")}` : "";
@@ -156,18 +153,24 @@ function tracksText(rb: PartAPhaseConfig["runbook"]): string {
 function buildPartASystem(inp: DsaPromptInput, phase: PhaseRow): string {
   const cfg = phase.config as PartAPhaseConfig;
   const rb = cfg.runbook;
-  const { primary, block } = primarySubmissionBlock(inp.submissions, cfg);
-  const outcome = primary?.outcome || "passed";
+  const { block } = primarySubmissionBlock(inp.submissions, cfg);
 
   const context = inp.submissions.filter((s) => !s.isPrimary);
   const contextBlock = context.length
     ? `\n\nOTHER SUBMISSIONS (context only; if the candidate refers to another problem you may discuss it briefly):\n${context
-        .map((s) => `- ${s.problemTitle}: ${s.outcome}${s.language ? ` (${s.language})` : ""}`)
+        .map((s) => `- ${s.problemTitle}${s.language ? ` (${s.language})` : ""}`)
         .join("\n")}`
     : "";
 
-  const probes = rb.outcomeProbes[outcome] || [];
-  const probesBlock = probes.length ? `\n\nPROBES FOR A ${outcome.toUpperCase()} SUBMISSION (use as needed, adapt to the conversation):\n${probes.map((p, i) => `${i + 1}. ${p}`).join("\n")}` : "";
+  const op = rb.outcomeProbes;
+  const probeGroups: Array<[string, string[]]> = [
+    ["If the code works and is correct", op.passed || []],
+    ["If the code works only partly", op.partial || []],
+    ["If the code does not work or does not run", op.failed || []],
+  ];
+  const probesBlock = probeGroups.some(([, list]) => list.length)
+    ? `\n\nPROBES (use the group that matches what you see in the code; adapt to the conversation):\n${probeGroups.filter(([, list]) => list.length).map(([when, list]) => `${when}:\n${list.map((p, i) => `${i + 1}. ${p}`).join("\n")}`).join("\n")}`
+    : "";
 
   const goal = flowSection(phase, "PART A");
 

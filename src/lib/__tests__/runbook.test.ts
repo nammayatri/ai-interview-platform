@@ -64,7 +64,11 @@ describe("validateSubmissions", () => {
     expect(errs(validateSubmissions([{ ...sub, isPrimary: false }]))).toMatch(/primary/);
     expect(errs(validateSubmissions([sub, sub]))).toMatch(/primary/);
   });
-  it("requires code and a valid outcome", () => {
+  it("accepts a code-only submission and stores a neutral result", () => {
+    const r = validateSubmissions([{ code: "print(1)", problemTitle: "T", isPrimary: true }]);
+    expect(r.ok && r.value[0]).toMatchObject({ code: "print(1)", outcome: "partial", language: "", score: null, testsPassed: null });
+  });
+  it("requires code and a valid outcome when one is given", () => {
     expect(errs(validateSubmissions([{ ...sub, code: " " }]))).toMatch(/code/);
     expect(errs(validateSubmissions([{ ...sub, outcome: "great" }]))).toMatch(/outcome/);
   });

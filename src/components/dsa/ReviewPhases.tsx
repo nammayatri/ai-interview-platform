@@ -151,10 +151,8 @@ export function ReviewPhases({ phases, dimensionSources, interviewPhases, submis
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider">Submitted code</h2>
             <p className="text-xs text-gray-500">
-              {primary.problemTitle} · {primary.language || "language n/a"} · <strong>{primary.outcome}</strong>
-              {primary.testsTotal !== null ? ` · ${primary.testsPassed ?? "?"}/${primary.testsTotal} tests` : ""}
-              {primary.score !== null ? ` · score ${primary.score}` : ""}
-              {primary.externalUrl && (<> · <a href={primary.externalUrl} target="_blank" rel="noreferrer" className="text-indigo-600 underline">HackerRank</a></>)}
+              {primary.problemTitle}{primary.language ? ` · ${primary.language}` : ""}
+              {primary.externalUrl && (<> · <a href={primary.externalUrl} target="_blank" rel="noreferrer" className="text-indigo-600 underline">Link</a></>)}
             </p>
           </div>
           {primary.notes && <p className="text-xs text-gray-600">Note: {primary.notes}</p>}
@@ -162,7 +160,7 @@ export function ReviewPhases({ phases, dimensionSources, interviewPhases, submis
             {primary.code.split("\n").map((l, i) => (<div key={i} className="flex"><span className="mr-3 w-8 shrink-0 select-none text-right text-gray-500">{i + 1}</span><span className="whitespace-pre-wrap break-all">{l || " "}</span></div>))}
           </pre>
           {others.length > 0 && (
-            <p className="text-xs text-gray-500">Context only: {others.map((o) => `${o.problemTitle} (${o.outcome})`).join(", ")}</p>
+            <p className="text-xs text-gray-500">Context only: {others.map((o) => o.problemTitle).join(", ")}</p>
           )}
         </div>
       )}

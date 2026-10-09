@@ -335,9 +335,9 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
                       <AddButton onClick={() => setRunbook({ solutionTracks: [...rb.solutionTracks, { key: "", name: "", approach: "", timeComplexity: "", spaceComplexity: "", probes: [""] }] })}>Add track</AddButton>
                     </Section>
 
-                    {kind === "parta" && <Section title="Probes by submission outcome" subtitle="Used according to how the candidate's submission fared (passed, partial or failed).">
+                    {kind === "parta" && <Section title="Probes about the candidate's code" subtitle="The AI reads the code and uses the group that matches what it sees.">
                       {(["passed", "partial", "failed"] as const).map((o) => (
-                        <StringListEditor key={o} label={`If the submission ${o === "passed" ? "passed" : o === "partial" ? "partially passed" : "failed"}`} items={rb.outcomeProbes[o]} onChange={(list) => setRunbook({ outcomeProbes: { ...rb.outcomeProbes, [o]: list } })} placeholder="A probe question" />
+                        <StringListEditor key={o} label={o === "passed" ? "If the code works and is correct" : o === "partial" ? "If the code works only partly" : "If the code does not work or does not run"} items={rb.outcomeProbes[o]} onChange={(list) => setRunbook({ outcomeProbes: { ...rb.outcomeProbes, [o]: list } })} placeholder="A probe question" />
                       ))}
                     </Section>}
                   </>

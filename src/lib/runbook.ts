@@ -231,7 +231,9 @@ export function validateSubmissions(raw: unknown): ValidationResult<SubmissionIn
     if (!problemTitle) errors.push(`submissions[${i}]: problemTitle is required`);
     if (!code.trim()) errors.push(`submissions[${i}]: code is required`);
     if (code.length > LIMITS.codeChars) errors.push(`submissions[${i}]: code exceeds ${LIMITS.codeChars} characters`);
-    if (!OUTCOMES.includes(s.outcome)) errors.push(`submissions[${i}]: outcome must be passed, partial or failed`);
+    // Interviewers no longer supply a result; the AI judges the code itself. The column is NOT NULL, so store a neutral value.
+    const outcome = s.outcome === undefined || s.outcome === null || s.outcome === "" ? "partial" : s.outcome;
+    if (!OUTCOMES.includes(outcome)) errors.push(`submissions[${i}]: outcome must be passed, partial or failed`);
     const num = (v: unknown) => {
       const n = optNum(v);
       return n === undefined || Number.isNaN(n) ? null : n;
@@ -246,7 +248,7 @@ export function validateSubmissions(raw: unknown): ValidationResult<SubmissionIn
       problemTitle,
       language: str(s.language).trim().slice(0, 50),
       code,
-      outcome: s.outcome,
+      outcome,
       score: num(s.score),
       testsPassed: testsPassed === null ? null : Math.floor(testsPassed),
       testsTotal: testsTotal === null ? null : Math.floor(testsTotal),

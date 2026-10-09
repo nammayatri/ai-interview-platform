@@ -5,15 +5,9 @@
 // random one, and plugs in an interview runbook.
 import { BUILTIN_RUNBOOKS, CLOSE_RESERVE_MIN, LIMITS, STAGE_KEYS, STAGE_LABELS, type StageKey } from "@/lib/runbook";
 
+/** Part A only needs the candidate's code; the AI works out what it does and whether it is right. */
 export interface SubmissionForm {
-  language: string;
   code: string;
-  outcome: "passed" | "partial" | "failed";
-  score: string;
-  testsPassed: string;
-  testsTotal: string;
-  externalUrl: string;
-  notes: string;
 }
 
 export interface StageState {
@@ -38,7 +32,7 @@ export interface StagesForm {
 export interface ItemOption { id: string; title: string; difficulty: string | null; runbook: { defaults?: { budgetMin: number; graceMin: number; earlyDoneAfterMin: number }; expectedMin?: number } }
 export interface RunbookOption { id: string; kind: StageKey; name: string; description: string }
 
-export const emptySubmission = (): SubmissionForm => ({ language: "", code: "", outcome: "failed", score: "", testsPassed: "", testsTotal: "", externalUrl: "", notes: "" });
+export const emptySubmission = (): SubmissionForm => ({ code: "" });
 
 export const emptyStagesForm = (): StagesForm => ({
   stages: [
@@ -48,8 +42,6 @@ export const emptyStagesForm = (): StagesForm => ({
   ],
   submission: emptySubmission(),
 });
-
-const numOrNull = (s: string) => (s.trim() === "" || Number.isNaN(Number(s)) ? null : Number(s));
 
 /** Total interview time: every enabled stage's time plus the closing reserve. */
 export function computeDuration(f: StagesForm): number {
@@ -67,8 +59,6 @@ export function stagesFormError(f: StagesForm): string | null {
   }
   if (on.some((s) => s.key === "parta")) {
     if (!f.submission.code.trim()) return "Part A: paste the candidate's submitted code";
-    const tp = numOrNull(f.submission.testsPassed), tt = numOrNull(f.submission.testsTotal);
-    if (tp !== null && tt !== null && tp > tt) return "Part A: tests passed cannot exceed tests total";
   }
   if (computeDuration(f) > 180) return "The stage times add up to more than 3 hours";
   return null;
@@ -90,13 +80,7 @@ export function stagesFormFields(f: StagesForm): Record<string, string> {
       }))
     ),
   };
-  if (on.some((s) => s.key === "parta")) {
-    const x = f.submission;
-    fields.partaSubmission = JSON.stringify({
-      language: x.language.trim(), code: x.code, outcome: x.outcome, score: numOrNull(x.score),
-      testsPassed: numOrNull(x.testsPassed), testsTotal: numOrNull(x.testsTotal), externalUrl: x.externalUrl.trim(), notes: x.notes.trim(),
-    });
-  }
+  if (on.some((s) => s.key === "parta")) fields.partaSubmission = JSON.stringify({ code: f.submission.code });
   return fields;
 }
 
@@ -116,32 +100,10 @@ function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) =
 }
 
 function SubmissionFields({ value, onChange }: { value: SubmissionForm; onChange: (v: SubmissionForm) => void }) {
-  const set = (patch: Partial<SubmissionForm>) => onChange({ ...value, ...patch });
   return (
-    <div className="space-y-3 rounded-xl bg-gray-50 border border-gray-200 p-4">
-      <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Candidate&apos;s submission <span className="text-red-400">*</span></h4>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div>
-          <label className="label">Result</label>
-          <select value={value.outcome} onChange={(e) => set({ outcome: e.target.value as SubmissionForm["outcome"] })} className="input-field">
-            <option value="passed">Passed</option><option value="partial">Partial</option><option value="failed">Failed / does not run</option>
-          </select>
-        </div>
-        <div><label className="label">Language</label><input value={value.language} onChange={(e) => set({ language: e.target.value })} className="input-field" placeholder="Python" /></div>
-        <div><label className="label">Score</label><input type="number" value={value.score} onChange={(e) => set({ score: e.target.value })} className="input-field" placeholder="optional" /></div>
-        <div className="grid grid-cols-2 gap-2">
-          <div><label className="label">Tests</label><input type="number" min={0} value={value.testsPassed} onChange={(e) => set({ testsPassed: e.target.value })} className="input-field" /></div>
-          <div><label className="label">of</label><input type="number" min={0} value={value.testsTotal} onChange={(e) => set({ testsTotal: e.target.value })} className="input-field" /></div>
-        </div>
-      </div>
-      <div>
-        <label className="label">Code <span className="text-gray-400 font-normal">({value.code.length.toLocaleString()} / {LIMITS.codeChars.toLocaleString()})</span></label>
-        <textarea value={value.code} onChange={(e) => set({ code: e.target.value.slice(0, LIMITS.codeChars) })} rows={12} spellCheck={false} className="input-field font-mono text-xs" placeholder="Paste the candidate's code" />
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label className="label">Link <span className="text-gray-400 font-normal">(optional)</span></label><input value={value.externalUrl} onChange={(e) => set({ externalUrl: e.target.value })} className="input-field" placeholder="https://..." /></div>
-        <div><label className="label">Notes for the AI <span className="text-gray-400 font-normal">(optional)</span></label><input value={value.notes} onChange={(e) => set({ notes: e.target.value })} className="input-field" placeholder="Known issues, what to focus on" /></div>
-      </div>
+    <div className="space-y-2 rounded-xl bg-gray-50 border border-gray-200 p-4">
+      <label className="label !mb-0">Candidate&apos;s code <span className="text-red-400">*</span> <span className="text-gray-400 font-normal">({value.code.length.toLocaleString()} / {LIMITS.codeChars.toLocaleString()})</span></label>
+      <textarea value={value.code} onChange={(e) => onChange({ code: e.target.value.slice(0, LIMITS.codeChars) })} rows={14} spellCheck={false} className="input-field font-mono text-xs" placeholder="Paste the code the candidate wrote for the Part A question" />
     </div>
   );
 }

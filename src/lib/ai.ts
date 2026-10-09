@@ -460,7 +460,7 @@ export function formatQAPairs(pairs: QAPair[]): string {
     : "No clear Q-A pairs found.";
 }
 
-export async function generateScorecard(interview: Interview): Promise<string> {
+export async function generateScorecard(interview: Interview, stageResults?: string): Promise<string> {
   const settings = await getOrgAISettings((interview as any).orgId);
   const transcriptText = interview.transcript
     .map((e) => `${e.role === "ai" ? "Interviewer" : "Candidate"}: ${e.text}`)
@@ -512,7 +512,10 @@ export async function generateScorecard(interview: Interview): Promise<string> {
     : "";
 
   const dsaNote = interview.roundType === DSA_REVIEW_ROUND
-    ? `\n\nROUND CONTEXT (DSA Review): this round was a conversation about the candidate's OWN HackerRank submission${(interview.submissions || []).length ? ` (${(interview.submissions || []).filter((s) => s.isPrimary).map((s) => `${s.problemTitle}: ${s.outcome}${s.testsTotal !== null ? `, ${s.testsPassed ?? "?"}/${s.testsTotal} tests` : ""}`).join("; ")})` : ""}, optionally followed by a reasoning puzzle. The candidate did not write code. The AI could give hints from a fixed ladder; hints are scored separately by the system. Score the five dimensions over the whole conversation: technicalDepth = understanding of their own code and complexity, problemSolving = debugging and optimization reasoning, communication = clarity of explanation. Ignore the focus-area coverage rule and cap-at-2 rule for areas that this round does not test.`
+    ? `\n\nROUND CONTEXT (staged coding evaluation): the interview ran in stages (Part A discussion of the candidate's own code, a live DSA problem solved with the approach by voice and the code typed in a scratchpad, and a reasoning puzzle; some may have been switched off or skipped). The AI could give hints from a fixed ladder; hints are scored separately by the system. The candidate could not run code. Score the five dimensions over the whole conversation: technicalDepth = understanding of code and complexity, problemSolving = debugging, approach and optimization, communication = clarity of explanation. Ignore the focus-area coverage rule and the cap-at-2 rule for areas this round does not test.`
+    : "";
+  const stageBlock = stageResults
+    ? `\n\n## Results of each stage (already scored by the system against the stage rubric: use them, do not contradict them)\n${stageResults}\nThe system sets the dimensions that these rubrics cover from the criteria above. Your summary, strengths, weaknesses and evidence must be consistent with these stage results, and you score the remaining dimensions (for example communication and cultureFit) from the whole transcript.`
     : "";
 
   const scorecardPrompt = `Senior evaluator scoring ${interview.level} ${interview.role}. Candidate: ${candidateName}.
@@ -546,6 +549,8 @@ Before scoring, identify which focus areas (${interview.focusAreas.join(", ")}) 
 - Focus area barely touched (1 shallow exchange) → cap related dimension at 2
 - Focus area NOT covered at all → score that dimension at 2 (max), note in weaknesses as "not tested: <area>"
 - List the covered vs uncovered areas in the "coverage" field of the output.
+
+${stageBlock}
 
 ## Resume + Question Bank + Additional Context (everything the interviewer was given)
 ${interview.resume || "No resume provided."}

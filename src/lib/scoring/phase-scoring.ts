@@ -70,7 +70,7 @@ function buildPhasePrompt(interview: Interview, phase: PhaseRow, qa: string): st
   if (phase.phaseKey === "parta") {
     const cfg = phase.config as PartAPhaseConfig;
     const primary = (interview.submissions || []).find((s) => s.id === cfg.primarySubmissionId) || (interview.submissions || []).find((s) => s.isPrimary);
-    intro = `PHASE: Part A, a discussion of the candidate's OWN already-written solution to "${cfg.problemTitle}". Submission outcome: ${primary?.outcome ?? "unknown"}${primary && primary.testsTotal !== null ? `, ${primary.testsPassed ?? "?"}/${primary.testsTotal} tests` : ""}. The candidate explained, debugged and optimized it by voice${scratch ? " and in a scratchpad" : ""}.${scratch}`;
+    intro = `PHASE: Part A, a discussion of the candidate's OWN already-written solution to "${cfg.problemTitle}". The code they submitted (judge yourself whether it is correct and how optimal it is):\n<<<CODE\n${(primary?.code || "").slice(0, 8000)}\nCODE>>>\nThe candidate explained, debugged and optimized it by voice${scratch ? " and in a scratchpad" : ""}.${scratch}`;
     reference = `REFERENCE SOLUTION TRACKS (the last is the best):\n${trackList(cfg.runbook.solutionTracks)}`;
   } else if (phase.phaseKey === "dsa") {
     const sel = (phase.config as import("../runbook").DsaPhaseConfig).selected;

@@ -7,12 +7,6 @@ import type { CandidateSubmission } from "./useDsaRoom";
 
 const CodeEditor = dynamic(() => import("../CodeEditor"), { ssr: false });
 
-const OUTCOME_STYLE: Record<string, string> = {
-  passed: "bg-green-500/15 text-green-300",
-  partial: "bg-amber-500/15 text-amber-300",
-  failed: "bg-red-500/15 text-red-300",
-};
-
 function PlainCode({ code }: { code: string }) {
   const lines = code.replace(/\r\n/g, "\n").split("\n");
   return (
@@ -58,7 +52,6 @@ export function ProblemPanel({ title, statementMd, submission }: { title: string
               <div className="mb-1.5 flex items-center gap-2 text-xs text-zinc-400">
                 <span className="font-semibold uppercase tracking-wider text-zinc-500">Your submission</span>
                 {submission.language && <span>{submission.language}</span>}
-                <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${OUTCOME_STYLE[submission.outcome] || ""}`}>{submission.outcome}</span>
               </div>
               <div className="min-h-0 flex-1">
                 {fallback && !monacoReady ? (
