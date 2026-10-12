@@ -341,7 +341,12 @@ function addWSProxy(server) {
     upstream.on("error", e => { cleanup(); console.error("[STT-WS]", e.message); if (clientWs.readyState === WebSocket.OPEN) clientWs.close(1011); });
   });
 
-  const shutdown = () => { wss.clients.forEach(ws => ws.close(1001)); wss.close(); pool.end(); server.close(() => process.exit(0)); setTimeout(() => process.exit(1), 5000); };
+  // Finish in-flight scoring and open requests before exiting (see graceful-shutdown.js).
+  const shutdown = require("./graceful-shutdown")({
+    server, wss, pool,
+    getActiveJobs: () => globalThis.__activeJobs || 0,
+    drainMs: Number(process.env.SHUTDOWN_DRAIN_MS) || 600000,
+  });
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 
@@ -363,6 +368,9 @@ if (process.env.NODE_ENV !== "production") {
   });
 } else {
   // PRODUCTION: intercept the HTTP server that startServer creates, then add WS proxy
+  // Next.js installs its own SIGTERM handler that exits at once; this switches it off so graceful-shutdown.js
+  // can wait for in-flight scoring and requests (see addWSProxy).
+  process.env.NEXT_MANUAL_SIG_HANDLE = "1";
   const http = require("http");
   const origCreate = http.createServer;
   http.createServer = function (...args) {

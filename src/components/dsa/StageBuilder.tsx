@@ -3,7 +3,8 @@
 // Interview stage builder for the coding evaluation: Part A (the candidate's own solution), a live DSA problem,
 // and a puzzle. Each stage can be switched on or off and reordered, has its own time, picks a specific item or a
 // random one, and plugs in an interview runbook.
-import { BUILTIN_RUNBOOKS, CLOSE_RESERVE_MIN, LIMITS, STAGE_KEYS, STAGE_LABELS, type StageKey } from "@/lib/runbook";
+import { useRef, useState } from "react";
+import { BUILTIN_RUNBOOKS, CLOSE_RESERVE_MIN, LIMITS, STAGE_KEYS, STAGE_LABELS, type StageKey, type StagePlan } from "@/lib/runbook";
 
 /** Part A only needs the candidate's code; the AI works out what it does and whether it is right. */
 export interface SubmissionForm {
@@ -53,7 +54,7 @@ export function computeDuration(f: StagesForm): number {
   return Math.max(5, Math.min(180, total));
 }
 
-export function stagesFormError(f: StagesForm): string | null {
+export function stagesFormError(f: StagesForm, opts: { requireCode?: boolean } = { requireCode: true }): string | null {
   const on = f.stages.filter((s) => s.enabled);
   if (on.length === 0) return "Turn on at least one stage";
   for (const s of on) {
@@ -61,8 +62,8 @@ export function stagesFormError(f: StagesForm): string | null {
     if (s.earlyDoneAfterMin > s.budgetMin) return `${STAGE_LABELS[s.key]}: "can finish early after" cannot exceed its time`;
     if (s.mode === "specific" && !s.itemId) return `${STAGE_LABELS[s.key]}: pick ${s.key === "parta" ? "the Part A question" : s.key === "dsa" ? "a DSA problem" : "a puzzle"}, or choose random`;
   }
-  if (on.some((s) => s.key === "parta")) {
-    if (!f.submission.code.trim()) return "Part A: paste the candidate's submitted code";
+  if (opts.requireCode !== false && on.some((s) => s.key === "parta")) {
+    if (!f.submission.code.trim()) return "Part A: paste or drop the candidate's submitted code";
   }
   if (computeDuration(f) > 180) return "The stage times add up to more than 3 hours";
   return null;
@@ -88,6 +89,42 @@ export function stagesFormFields(f: StagesForm): Record<string, string> {
   return fields;
 }
 
+/** The enabled stages in the shape a template stores. */
+export function formToTemplateStages(f: StagesForm): StagePlan[] {
+  return f.stages.filter((s) => s.enabled).map((s) => ({
+    key: s.key,
+    budgetMin: s.budgetMin,
+    graceMin: s.graceMin,
+    earlyDoneAfterMin: s.key === "puzzle" ? null : s.earlyDoneAfterMin,
+    mode: s.key === "parta" ? "specific" : s.mode,
+    itemId: s.key === "parta" || s.mode === "specific" ? s.itemId || null : null,
+    runbookId: s.runbookId || null,
+  }));
+}
+
+/** Loads a template's stages into the form: its stages on, in its order, the others off at the end. */
+export function applyTemplateStages(f: StagesForm, stages: StagePlan[]): StagesForm {
+  const base = emptyStagesForm().stages;
+  const used = stages.map((t) => {
+    const d = base.find((b) => b.key === t.key)!;
+    return {
+      ...d,
+      enabled: true,
+      budgetMin: t.budgetMin,
+      graceMin: t.graceMin,
+      earlyDoneAfterMin: t.earlyDoneAfterMin ?? d.earlyDoneAfterMin,
+      mode: t.mode,
+      itemId: t.itemId || "",
+      runbookId: t.runbookId || "",
+      timeTouched: true,
+    };
+  });
+  const rest = base.filter((b) => !stages.some((t) => t.key === b.key)).map((b) => ({ ...b, enabled: false }));
+  return { ...f, stages: [...used, ...rest] };
+}
+
+const MAX_DROPPED_FILE_BYTES = 300 * 1024;
+
 const BLURB: Record<StageKey, string> = {
   parta: "The AI evaluates the candidate's own submission against the Part A question's runbook: function by function, complexity, then asks for an optimized approach.",
   dsa: "A fresh problem. The AI asks for the approach, then the candidate types the code in the scratchpad.",
@@ -104,17 +141,52 @@ function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) =
 }
 
 function SubmissionFields({ value, onChange }: { value: SubmissionForm; onChange: (v: SubmissionForm) => void }) {
+  const [over, setOver] = useState(false);
+  const [note, setNote] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const picker = useRef<HTMLInputElement>(null);
+
+  const loadFile = async (file: File | undefined) => {
+    if (!file) return;
+    if (file.size > MAX_DROPPED_FILE_BYTES) return setNote({ kind: "error", text: `${file.name} is larger than 300 KB. Code files are usually much smaller; check you picked the right file.` });
+    const text = await file.text();
+    if (text.includes("\u0000")) return setNote({ kind: "error", text: `${file.name} looks like a binary file, not source code.` });
+    if (!text.trim()) return setNote({ kind: "error", text: `${file.name} is empty.` });
+    const clipped = text.length > LIMITS.codeChars;
+    onChange({ code: text.slice(0, LIMITS.codeChars) });
+    setNote({ kind: clipped ? "error" : "ok", text: clipped ? `${file.name} was cut to the first ${LIMITS.codeChars.toLocaleString()} characters.` : `Loaded ${file.name} (${text.split("\n").length} lines).` });
+  };
+
   return (
     <div className="space-y-2 rounded-xl bg-gray-50 border border-gray-200 p-4">
-      <label className="label !mb-0">Candidate&apos;s code <span className="text-red-400">*</span> <span className="text-gray-400 font-normal">({value.code.length.toLocaleString()} / {LIMITS.codeChars.toLocaleString()})</span></label>
-      <textarea value={value.code} onChange={(e) => onChange({ code: e.target.value.slice(0, LIMITS.codeChars) })} rows={14} spellCheck={false} className="input-field font-mono text-xs" placeholder="Paste the code the candidate wrote for the Part A question" />
+      <div className="flex items-center justify-between gap-2">
+        <label className="label !mb-0">Candidate&apos;s code <span className="text-red-400">*</span> <span className="text-gray-400 font-normal">({value.code.length.toLocaleString()} / {LIMITS.codeChars.toLocaleString()})</span></label>
+        <button type="button" onClick={() => picker.current?.click()} className="text-xs text-indigo-600 hover:text-indigo-800">Choose a file</button>
+        <input ref={picker} type="file" className="hidden" accept=".py,.java,.cpp,.cc,.c,.h,.js,.ts,.go,.rs,.kt,.swift,.rb,.cs,.php,.scala,.txt,text/*" onChange={(e) => { loadFile(e.target.files?.[0]); e.target.value = ""; }} />
+      </div>
+      <div
+        onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+        onDragLeave={() => setOver(false)}
+        onDrop={(e) => { e.preventDefault(); setOver(false); loadFile(e.dataTransfer.files?.[0]); }}
+        className={`rounded-lg border-2 border-dashed transition ${over ? "border-indigo-400 bg-indigo-50" : "border-transparent"}`}
+      >
+        <textarea value={value.code} onChange={(e) => { setNote(null); onChange({ code: e.target.value.slice(0, LIMITS.codeChars) }); }} rows={14} spellCheck={false} className="input-field font-mono text-xs"
+          placeholder="Drop the candidate's code file here, choose a file, or paste the code" />
+      </div>
+      {note && <p className={`text-xs ${note.kind === "ok" ? "text-green-700" : "text-amber-700"}`}>{note.text}</p>}
     </div>
   );
 }
 
-export function StageBuilder({ form, onChange, partaQuestions, dsaProblems, puzzles, runbooks, startStep }: {
+export interface TemplateOption { id: string; name: string; level: string; stages: StagePlan[]; durationMin: number }
+
+export function StageBuilder({ form, onChange, partaQuestions, dsaProblems, puzzles, runbooks, startStep, templateMode = false, templates = [], onApplyTemplate }: {
   form: StagesForm; onChange: (f: StagesForm) => void;
   partaQuestions: ItemOption[]; dsaProblems: ItemOption[]; puzzles: ItemOption[]; runbooks: RunbookOption[]; startStep: number;
+  /** Editing a template: no candidate code box, and the Part A question is chosen but not the code. */
+  templateMode?: boolean;
+  /** Single-interview form: saved templates that can be loaded into the stages. */
+  templates?: TemplateOption[];
+  onApplyTemplate?: (t: TemplateOption) => void;
 }) {
   const update = (key: StageKey, patch: Partial<StageState>) =>
     onChange({ ...form, stages: form.stages.map((s) => (s.key === key ? { ...s, ...patch } : s)) });
@@ -140,7 +212,7 @@ export function StageBuilder({ form, onChange, partaQuestions, dsaProblems, puzz
   };
 
   const total = computeDuration(form);
-  const error = stagesFormError(form);
+  const error = stagesFormError(form, { requireCode: !templateMode });
 
   return (
     <div className="card p-6 border-l-4 border-l-amber-500 space-y-5">
@@ -151,6 +223,17 @@ export function StageBuilder({ form, onChange, partaQuestions, dsaProblems, puzz
           <p className="text-xs text-gray-500 mt-0.5">Switch stages on or off, reorder them, and give each its own time. Each stage uses a runbook that tells the AI how to ask.</p>
         </div>
       </div>
+
+      {!templateMode && templates.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg bg-gray-50 border border-gray-200 px-3 py-2">
+          <label className="text-xs font-medium text-gray-600" htmlFor="apply-template">Start from a template</label>
+          <select id="apply-template" defaultValue="" onChange={(e) => { const t = templates.find((x) => x.id === e.target.value); if (t && onApplyTemplate) onApplyTemplate(t); e.target.value = ""; }} className="input-field !w-auto !py-1.5 text-xs">
+            <option value="">Choose...</option>
+            {templates.map((t) => <option key={t.id} value={t.id}>{t.name} ({t.durationMin} min)</option>)}
+          </select>
+          <span className="text-[11px] text-gray-400">Fills the stages below. You can still change anything.</span>
+        </div>
+      )}
 
       <ol className="space-y-4">
         {form.stages.map((s, i) => {
@@ -216,7 +299,7 @@ export function StageBuilder({ form, onChange, partaQuestions, dsaProblems, puzz
                     </p>
                   </div>
 
-                  {s.key === "parta" && <SubmissionFields value={form.submission} onChange={(submission) => onChange({ ...form, submission })} />}
+                  {s.key === "parta" && !templateMode && <SubmissionFields value={form.submission} onChange={(submission) => onChange({ ...form, submission })} />}
                 </div>
               )}
             </li>

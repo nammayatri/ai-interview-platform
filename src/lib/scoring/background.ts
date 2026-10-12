@@ -2,6 +2,7 @@ import { getInterview, updateInterview } from "../store";
 import { startScoring, completeScoring, failScoring } from "../scoring-tracker";
 import { buildScorecard } from "./run-scoring";
 import { closePhasesOnEnd } from "../phase-store";
+import { beginJob } from "../active-jobs";
 
 /** Scores a finished interview and notifies its creator. Safe to call more than once. */
 export async function scoreInterviewInBackground(id: string, interview?: any): Promise<void> {
@@ -11,6 +12,7 @@ export async function scoreInterviewInBackground(id: string, interview?: any): P
 
 /** The scoring run itself. The caller has already marked the interview as "generating" (startScoring). */
 export async function runScoring(id: string, interview?: any, opts: { notify: boolean } = { notify: true }): Promise<void> {
+  const endJob = beginJob(); // a shutdown waits for this run instead of killing it
   try {
     const source = interview ?? (await getInterview(id));
     if (!source) throw new Error("Interview not found");
@@ -39,6 +41,8 @@ export async function runScoring(id: string, interview?: any, opts: { notify: bo
   } catch (err) {
     await failScoring(id, (err as Error).message);
     console.error(`[Auto-Score] Failed for interview ${id}:`, err);
+  } finally {
+    endJob();
   }
 }
 
@@ -46,12 +50,15 @@ export async function runScoring(id: string, interview?: any, opts: { notify: bo
 export async function finishInterview(id: string, roundType?: string): Promise<void> {
   await updateInterview(id, { status: "completed", endedAt: new Date().toISOString() });
   if (roundType === "DSA Review") await closePhasesOnEnd(id);
+  const endJob = beginJob(); // covers the 3 second wait too, so a shutdown right now does not lose the scoring
   setTimeout(async () => {
     try {
       const fresh = await getInterview(id);
       if (fresh && fresh.transcript.length > 0 && !fresh.scorecard) await scoreInterviewInBackground(id, fresh);
     } catch (err) {
       console.error(`[Auto-Score] Failed to fetch interview ${id}:`, err);
+    } finally {
+      endJob();
     }
   }, 3000);
 }

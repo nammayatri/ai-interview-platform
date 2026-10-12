@@ -467,3 +467,34 @@ export function snapshotPuzzleConfig(
     selection,
   };
 }
+
+// ─── Interview templates ──────────────────────────────────────────────────────
+
+export const LEVELS = ["Intern", "Junior", "Mid", "Senior", "Staff", "Principal", "Manager", "Director"];
+
+/** Total interview time for a stage plan: every stage's time and grace, plus the closing reserve. */
+export function stagesDuration(stages: Array<{ budgetMin: number; graceMin: number }>): number {
+  return Math.max(5, stages.reduce((n, s) => n + s.budgetMin + s.graceMin, 0) + CLOSE_RESERVE_MIN);
+}
+
+export interface InterviewTemplateInput {
+  name: string;
+  description: string;
+  level: string;
+  stages: StagePlan[];
+}
+
+export function validateTemplate(raw: unknown): ValidationResult<InterviewTemplateInput> {
+  const errors: string[] = [];
+  if (!isObj(raw)) return { ok: false, errors: ["template must be an object"] };
+  const name = str(raw.name).trim();
+  if (!name) errors.push("name is required");
+  if (name.length > 255) errors.push("name must be at most 255 characters");
+  const level = str(raw.level).trim() || "Mid";
+  if (!LEVELS.includes(level)) errors.push(`level must be one of ${LEVELS.join(", ")}`);
+  const st = validateStages(raw.stages, 180);
+  if (!st.ok) errors.push(...st.errors);
+  else if (stagesDuration(st.value) > 180) errors.push("The stage times add up to more than 3 hours");
+  if (errors.length) return { ok: false, errors };
+  return { ok: true, value: { name, description: str(raw.description).trim().slice(0, 1000), level, stages: (st as { ok: true; value: StagePlan[] }).value } };
+}

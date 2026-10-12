@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { TemplatesStrip } from "@/components/templates/TemplatesStrip";
+import { rescoreAndWait } from "@/lib/client/rescore";
 import ReactDOM from "react-dom";
 import { useSession } from "next-auth/react";
 import Link from "next/link";
@@ -517,6 +519,8 @@ export default function DashboardPage() {
           ))}
         </div>
 
+        <TemplatesStrip />
+
         {/* Search + Filters */}
         <div className="flex flex-col gap-3 mb-6 animate-fade-in-up delay-3">
           {/* Row 1: Search + Date Range + Export */}
@@ -876,11 +880,7 @@ export default function DashboardPage() {
                                     btn.disabled = true;
                                     btn.textContent = "Scoring...";
                                     try {
-                                      const res = await fetch("/api/scorecard", {
-                                        method: "POST",
-                                        headers: { "Content-Type": "application/json" },
-                                        body: JSON.stringify({ interviewId: interview.id }),
-                                      });
+                                      const res = await rescoreAndWait(interview.id);
                                       if (res.ok) {
                                         btn.textContent = "Done!";
                                         setTimeout(() => window.location.reload(), 1000);

@@ -60,4 +60,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 # Custom server with WebSocket STT proxy (wraps Next.js standalone server)
 COPY --from=builder /app/server-custom.js ./server-custom.js
+COPY --from=builder /app/graceful-shutdown.js ./graceful-shutdown.js
 CMD ["node", "server-custom.js"]

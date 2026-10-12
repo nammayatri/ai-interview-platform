@@ -3,8 +3,12 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import { DashboardLayout } from "@/components/DashboardLayout";
+import { BulkUpload } from "@/components/bulk/BulkUpload";
+import type { TemplateRow } from "@/components/templates/TemplatesPage";
 import {
   StageBuilder,
+  applyTemplateStages,
+  type TemplateOption,
   computeDuration,
   emptyStagesForm,
   stagesFormError,
@@ -70,6 +74,9 @@ export default function NewInterviewPage() {
   const [puzzles, setPuzzles] = useState<ItemOption[]>([]);
   const [runbooks, setRunbooks] = useState<RunbookOption[]>([]);
   const isDsa = roundType === CODING_ROUND;
+  const [mode, setMode] = useState<"single" | "bulk">("single");
+  const [templates, setTemplates] = useState<TemplateRow[]>([]);
+  const [queryTemplateId, setQueryTemplateId] = useState("");
   const role_ = (session?.user as any)?.role as string | undefined;
   const canCreate = !role_ || role_ === "admin" || role_ === "interviewer";
 
@@ -79,6 +86,11 @@ export default function NewInterviewPage() {
     load("/api/problems?kind=dsa", setDsaProblems);
     load("/api/puzzles", setPuzzles);
     load("/api/runbooks", setRunbooks);
+    load("/api/interview-templates", setTemplates);
+    // /new?mode=bulk&template=<id> comes from the Interview Templates page
+    const q = new URLSearchParams(window.location.search);
+    if (q.get("mode") === "bulk") setMode("bulk");
+    setQueryTemplateId(q.get("template") || "");
   }, []);
 
   useEffect(() => {
@@ -93,6 +105,17 @@ export default function NewInterviewPage() {
       })
       .catch(() => {});
   }, []);
+
+  const applyTemplate = (t: { level: string; stages: TemplateOption["stages"] }) => {
+    setRoundType(CODING_ROUND);
+    setLevel(t.level);
+    setStages((prev) => applyTemplateStages(prev, t.stages));
+  };
+  useEffect(() => {
+    if (!queryTemplateId || mode !== "single") return;
+    const t = templates.find((x) => x.id === queryTemplateId);
+    if (t) { applyTemplate(t); setQueryTemplateId(""); }
+  }, [templates, queryTemplateId, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleFocus = (area: string) => {
     setFocusAreas((prev) =>
@@ -217,14 +240,27 @@ export default function NewInterviewPage() {
         {/* Page header */}
         <div className="mb-8 animate-fade-in-down">
           <h1 className="text-2xl font-bold text-gray-900">Create Interview</h1>
-          <p className="text-sm text-gray-500 mt-1">Set up an AI-powered interview session for your candidate</p>
+          <p className="text-sm text-gray-500 mt-1">{mode === "bulk" ? "Create interviews for many candidates at once from a CSV or Excel file" : "Set up an AI-powered interview session for your candidate"}</p>
         </div>
+
+        {canCreate && !interviewLink && (
+          <div className="mb-6 inline-flex rounded-xl border border-gray-200 bg-white p-1 shadow-sm" role="tablist" aria-label="How many candidates">
+            {([["single", "One candidate"], ["bulk", "Bulk upload (CSV / Excel)"]] as const).map(([m, label]) => (
+              <button key={m} role="tab" aria-selected={mode === m} onClick={() => setMode(m)}
+                className={`px-4 py-2 text-sm font-medium rounded-lg transition ${mode === m ? "bg-indigo-600 text-white shadow-sm" : "text-gray-600 hover:bg-gray-50"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
 
         {!canCreate ? (
           <div className="card p-10 text-center">
             <p className="text-lg font-semibold text-gray-900 mb-1">You can&apos;t create interviews</p>
             <p className="text-sm text-gray-500">Your role is read-only. Ask an admin to make you an interviewer.</p>
           </div>
+        ) : mode === "bulk" && !interviewLink ? (
+          <BulkUpload templates={templates} emailTemplates={emailTemplates} initialTemplateId={queryTemplateId} />
         ) : interviewLink ? (
           /* ── Success State ──────────────────────────────────────── */
           <div className="card p-10 text-center space-y-6 animate-scale-in relative overflow-hidden">
@@ -541,7 +577,7 @@ export default function NewInterviewPage() {
             </div>
 
             {isDsa && (
-              <StageBuilder form={stages} onChange={setStages} partaQuestions={partaQuestions} dsaProblems={dsaProblems} puzzles={puzzles} runbooks={runbooks} startStep={3} />
+              <StageBuilder templates={templates} onApplyTemplate={applyTemplate} form={stages} onChange={setStages} partaQuestions={partaQuestions} dsaProblems={dsaProblems} puzzles={puzzles} runbooks={runbooks} startStep={3} />
             )}
 
             {/* Section 3: Context & Questions */}
