@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { rescoreAndWait } from "@/lib/client/rescore";
 import Link from "next/link";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { normalizeScorecard } from "@/lib/normalize-scorecard";
@@ -309,11 +310,7 @@ export default function InterviewDetailPage({ params }: { params: { id: string }
                         btn.disabled = true;
                         btn.textContent = "Generating...";
                         try {
-                          const res = await fetch("/api/scorecard", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ interviewId: interview.id }),
-                          });
+                          const res = await rescoreAndWait(interview.id);
                           if (res.ok) setTimeout(() => window.location.reload(), 1000);
                           else { btn.textContent = "Failed — Try Again"; btn.disabled = false; }
                         } catch { btn.textContent = "Failed — Try Again"; btn.disabled = false; }
@@ -333,11 +330,7 @@ export default function InterviewDetailPage({ params }: { params: { id: string }
                         btn.textContent = "Generating...";
                         setScoringStatus("generating");
                         try {
-                          const res = await fetch("/api/scorecard", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ interviewId: interview.id }),
-                          });
+                          const res = await rescoreAndWait(interview.id);
                           if (res.ok) setTimeout(() => window.location.reload(), 1000);
                           else if (res.status === 409) setScoringStatus("generating");
                           else { btn.textContent = "Failed — Try Again"; btn.disabled = false; setScoringStatus("failed"); }
@@ -366,11 +359,7 @@ export default function InterviewDetailPage({ params }: { params: { id: string }
                       btn.disabled = true;
                       btn.textContent = "Rescoring...";
                       try {
-                        const res = await fetch("/api/scorecard", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ interviewId: interview.id }),
-                        });
+                        const res = await rescoreAndWait(interview.id);
                         if (res.ok) {
                           btn.textContent = "Done!";
                           setTimeout(() => window.location.reload(), 1000);

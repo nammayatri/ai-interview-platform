@@ -2,13 +2,13 @@ import { pool } from "./db";
 
 export async function startScoring(interviewId: string): Promise<boolean> {
   // Atomic check-and-set: only succeeds if not already generating
-  // Also allows retry if stuck in 'generating' for >5 minutes (server crash recovery)
+  // Also allows retry if stuck in 'generating' for >20 minutes (reasoning-model scoring of a long interview takes minutes) (server crash recovery)
   const { rowCount } = await pool.query(
     `UPDATE interviews SET scoring_status = 'generating', scoring_started_at = NOW()
      WHERE id = $1 AND (
        scoring_status IS NULL
        OR scoring_status != 'generating'
-       OR scoring_started_at < NOW() - INTERVAL '5 minutes'
+       OR scoring_started_at < NOW() - INTERVAL '20 minutes'
      )`,
     [interviewId]
   );
@@ -36,13 +36,14 @@ export async function getScoringStatus(interviewId: string): Promise<{ status: s
     [interviewId]
   );
   if (rows.length === 0) return { status: "not_found" };
-  if (rows[0].has_scorecard) return { status: "completed" };
-
-  // If stuck in generating for >5 min, treat as failed (server crash recovery)
+  // A rescore regenerates a scorecard that already exists: while it runs, report "generating", not "completed".
   if (rows[0].scoring_status === "generating" && rows[0].scoring_started_at) {
     const elapsed = Date.now() - new Date(rows[0].scoring_started_at).getTime();
-    if (elapsed > 5 * 60 * 1000) return { status: "failed" };
+    if (elapsed <= 20 * 60 * 1000) return { status: "generating" };
+    // stuck for more than 20 minutes: server crash recovery
+    return rows[0].has_scorecard ? { status: "completed" } : { status: "failed" };
   }
+  if (rows[0].has_scorecard) return { status: "completed" };
 
   return { status: rows[0].scoring_status || "not_started" };
 }

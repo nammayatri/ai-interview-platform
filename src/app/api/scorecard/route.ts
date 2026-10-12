@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getInterview, updateInterview } from "@/lib/store";
 import { startScoring, completeScoring, failScoring } from "@/lib/scoring-tracker";
-import { buildScorecard } from "@/lib/scoring/run-scoring";
+import { runScoring } from "@/lib/scoring/background";
 import { closePhasesOnEnd, getPhases } from "@/lib/phase-store";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -46,16 +46,11 @@ export async function POST(req: Request) {
       await closePhasesOnEnd(interviewId);
       interview.phases = await getPhases(interviewId);
     }
-    const scorecard = await buildScorecard(interview);
+    await updateInterview(interviewId, { status: "completed", ...(interview.endedAt ? {} : { endedAt: new Date().toISOString() }) });
 
-    await updateInterview(interviewId, {
-      scorecard,
-      status: "completed",
-      endedAt: new Date().toISOString(),
-    });
-
-    await completeScoring(interviewId);
-    return NextResponse.json(scorecard);
+    // Scoring with a reasoning model takes minutes: run it in the background and let the page poll the status.
+    void runScoring(interviewId, interview, { notify: false });
+    return NextResponse.json({ status: "started" }, { status: 202 });
   } catch (error) {
     console.error("Scorecard generation error:", error);
     if (interviewId) {

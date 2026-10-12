@@ -6,6 +6,7 @@ import { pool } from "@/lib/db";
 import { getTTSProvider } from "@/lib/providers";
 import { canEndNow, getRemainingSeconds } from "@/lib/interview-time";
 import { cleanForTTS } from "@/lib/tts-text";
+import { aiLimits } from "@/lib/ai-limits";
 import { stripMarkers } from "@/lib/phase-engine";
 import { finalizeDsaTurn, isDsaReview, prepareDsaTurn, type DsaTurnPrep } from "@/lib/dsa-turn";
 import { finishInterview } from "@/lib/scoring/background";
@@ -123,7 +124,7 @@ export async function POST(req: Request) {
               body: JSON.stringify({
                 model: process.env.AI_MODEL || "minimaxai/minimax-m2",
                 messages: aiMessages,
-                max_tokens: 700, // ~200 wasted on reasoning_content + ~500 actual content
+                max_tokens: aiLimits.chatMaxTokens(700), // ~200 wasted on reasoning_content + ~500 actual content
                 temperature: 0.3,
                 stream: true,
                 // Only send thinking param for MiniMax models (Groq/OpenAI reject it)

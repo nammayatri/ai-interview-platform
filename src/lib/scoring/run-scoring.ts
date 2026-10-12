@@ -62,7 +62,10 @@ export function formatStageResults(described: ReturnType<typeof describePhase>[]
 async function scoreCompletedPhases(interview: Interview) {
   const phases = (await getPhases(interview.id)).filter((p) => p.status === "completed");
   const withInterview: Interview = { ...interview, phases };
-  const results = await Promise.all(phases.map((p) => scorePhase(withInterview, p)));
+  // First generation or a retry after a failed run (no scorecard yet): keep stages that were already scored.
+  // A deliberate Rescore (a scorecard exists) scores every stage again.
+  const reuse = !interview.scorecard;
+  const results = await Promise.all(phases.map((p) => scorePhase(withInterview, p, { reuse })));
   const inputs = phases
     .map((p, i) => toRollupInput(p, results[i]))
     .filter((x): x is NonNullable<typeof x> => x !== null);

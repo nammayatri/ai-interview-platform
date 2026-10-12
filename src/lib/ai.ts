@@ -1,5 +1,6 @@
 import type { Interview, TranscriptEntry } from "./store";
 import { DEFAULT_AI_SETTINGS, AISettings, getOrgAISettings } from "./ai-settings";
+import { aiLimits } from "./ai-limits";
 import type { PhaseResolution } from "./phase-engine";
 import type { Hint } from "./runbook";
 import { DSA_REVIEW_ROUND, buildDsaReviewMessages, extractInterviewerNotes } from "./prompt/dsa-review";
@@ -267,46 +268,56 @@ function buildResumeContext(interview: Interview): string {
   return `Here is the candidate's resume. After asking question bank questions, use this resume to ask specific, targeted follow-ups about their past work:\n\n${resume}`;
 }
 
-type AIConfig = { baseUrl: string; apiKey: string; model: string; timeoutMs: number };
+type AIConfig = { baseUrl: string; apiKey: string; model: string; timeoutMs: number; reasoningEffort?: string };
 
 const getChatConfig = (): AIConfig => ({
   baseUrl: process.env.AI_BASE_URL || "",
   apiKey: process.env.AI_API_KEY || "",
   model: process.env.AI_MODEL || "kimi-latest",
   timeoutMs: 12000,
+  reasoningEffort: process.env.AI_REASONING_EFFORT || undefined,
 });
 
 const getSummaryConfig = (): AIConfig => ({
   baseUrl: process.env.SUMMARY_AI_BASE_URL || process.env.AI_BASE_URL || "",
   apiKey: process.env.SUMMARY_AI_API_KEY || process.env.AI_API_KEY || "",
   model: process.env.SUMMARY_AI_MODEL || process.env.AI_MODEL || "kimi-latest",
-  timeoutMs: 60000,
+  // Scoring uses a reasoning model and should reason. What goes wrong is a token budget too small to finish thinking
+  // (empty reply) and a timeout shorter than the thinking time, so give it room: a long stage takes 1 to 2.5 minutes.
+  // Optional: SUMMARY_AI_REASONING_EFFORT = low | medium | high to cap the thinking.
+  timeoutMs: aiLimits.scoringTimeoutMs(),
+  reasoningEffort: process.env.SUMMARY_AI_REASONING_EFFORT || process.env.AI_REASONING_EFFORT || undefined,
 });
 
 async function callAI(
   config: AIConfig,
   messages: { role: string; content: string }[],
   maxTokens: number,
-  temperature: number
+  temperature: number,
+  isRetry = false
 ): Promise<string> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
 
-  const res = await fetch(`${config.baseUrl}/v1/chat/completions`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: config.model,
-      messages,
-      max_tokens: maxTokens,
-      temperature,
-      ...(config.model.includes("minimax") ? { thinking: { type: "disabled" } } : {}),
-      // Reasoning models can burn the whole token budget thinking → empty reply. Opt-in via env.
-      ...(process.env.AI_REASONING_EFFORT ? { reasoning_effort: process.env.AI_REASONING_EFFORT } : {}),
-    }),
-    signal: controller.signal,
-  });
-  clearTimeout(timeout);
+  let res: Response;
+  try {
+    res = await fetch(`${config.baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: config.model,
+        messages,
+        max_tokens: maxTokens,
+        temperature,
+        ...(config.model.includes("minimax") ? { thinking: { type: "disabled" } } : {}),
+        // Reasoning models can burn the whole token budget thinking → empty reply.
+        ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}),
+      }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!res.ok) {
     const err = await res.text();
@@ -314,8 +325,14 @@ async function callAI(
   }
 
   const data = await res.json();
-  const content = data.choices?.[0]?.message?.content || "";
-  return stripThinking(content);
+  const choice = data.choices?.[0];
+  const cleaned = stripThinking(choice?.message?.content || "");
+  if (!cleaned.trim() && !isRetry) {
+    // Empty answer: usually a reasoning model that spent the whole budget thinking (finish_reason "length").
+    console.warn(`[AI] Empty reply from ${config.model} (finish_reason=${choice?.finish_reason}, completion_tokens=${data.usage?.completion_tokens}). Retrying once with low reasoning effort.`);
+    return callAI({ ...config, reasoningEffort: "low" }, messages, Math.min(maxTokens * 2, aiLimits.scoringRetryMaxTokens()), temperature, true);
+  }
+  return cleaned;
 }
 
 /** Interview conversation turn — fast, short, uses chat model. */
@@ -330,7 +347,7 @@ async function callChatAI(
 /** Scorecard / summary generation — long-form, uses summary model. */
 export async function callSummaryAI(
   messages: { role: string; content: string }[],
-  maxTokens = 5500,
+  maxTokens = aiLimits.finalScoringMaxTokens(),
   temperature = 0.3
 ): Promise<string> {
   return callAI(getSummaryConfig(), messages, maxTokens, temperature);
@@ -428,7 +445,7 @@ export function buildInterviewPrompt(
 
 /** Chat-model call for a DSA Review turn whose messages were built by prepareDsaTurn. */
 export async function getDsaAIText(messages: { role: string; content: string }[]): Promise<string> {
-  return callChatAI(messages, 700, 0.3);
+  return callChatAI(messages, aiLimits.chatMaxTokens(700), 0.3);
 }
 
 export async function getAIResponse(
@@ -436,7 +453,7 @@ export async function getAIResponse(
   transcript: TranscriptEntry[]
 ): Promise<string> {
   const settings = await getOrgAISettings((interview as any).orgId);
-  return callChatAI(buildInterviewPrompt(interview, transcript, settings), 500, 0.3);
+  return callChatAI(buildInterviewPrompt(interview, transcript, settings), aiLimits.chatMaxTokens(500), 0.3);
 }
 
 export interface QAPair { q: string; a: string; idx: number }
@@ -596,5 +613,5 @@ Respond with ONLY valid JSON (do NOT include overall or recommendation — syste
   "proctoringNotes": "<summary or 'No issues detected'>"
 }`;
 
-  return callSummaryAI([{ role: "system", content: scorecardPrompt }], 5500, 0.3);
+  return callSummaryAI([{ role: "system", content: scorecardPrompt }], aiLimits.finalScoringMaxTokens(), 0.3);
 }

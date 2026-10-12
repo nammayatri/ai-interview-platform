@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { describePhase, normalizePhaseScorecard } from "../scoring/phase-scoring";
+import { describePhase, normalizePhaseScorecard, salvagePhaseScorecard } from "../scoring/phase-scoring";
+import { parseScorecardJSON } from "../parse-scorecard";
 import { customFlow, partaConfig, phase, problemRunbook } from "./fixtures";
 
 describe("normalizePhaseScorecard", () => {
@@ -50,5 +51,59 @@ describe("runbook criteria in scoring", () => {
     const d = describePhase(p, { criteria: [{ id: "bottleneck", credit: "met", evidence: "" }, { id: "complexity", credit: "met", evidence: "" }, { id: "rb:every_fn", credit: "partial", evidence: "x" }], notes: "" });
     expect(d.criteria.map((c) => c.id)).toEqual(["bottleneck", "complexity", "rb:every_fn"]);
     expect(d.criteria[2]).toMatchObject({ credit: "partial", mapsTo: "technicalDepth" });
+  });
+});
+
+describe("salvagePhaseScorecard (a reply that is not valid JSON)", () => {
+  const rubric = [
+    { id: "understanding", text: "u", weight: 1, mapsTo: "problemSolving" as const },
+    { id: "complexity", text: "c", weight: 1, mapsTo: "technicalDepth" as const },
+    { id: "rb:why", text: "w", weight: 1, mapsTo: "technicalDepth" as const },
+  ];
+  // The candidate's own words contain double quotes, which break the JSON.
+  const broken = `{
+  "criteria": [
+    {"id": "understanding", "credit": "met", "evidence": "He said "a nested loop" and then explained the lock rules."},
+    {"id": "complexity", "credit": "partial", "evidence": "Said "O(h)" without defining h"},
+    {"id": "rb:why", "credit": "missed", "evidence": ""}
+  ],
+  "notes": "Understood the rules, vague on "why" for complexity."
+}`;
+
+  it("the broken reply really does defeat the strict parser (so the rescue is needed)", () => {
+    expect(() => JSON.parse(broken)).toThrow();
+  });
+  it("reads every criterion's credit, including ids that contain a colon", () => {
+    const r = salvagePhaseScorecard(broken, rubric, false)!;
+    expect(r.criteria!.map((c) => [c.id, c.credit])).toEqual([["understanding", "met"], ["complexity", "partial"], ["rb:why", "missed"]]);
+  });
+  it("keeps the evidence text, quotes and all, and the notes", () => {
+    const r = salvagePhaseScorecard(broken, rubric, false)!;
+    expect(r.criteria![0].evidence).toContain('a nested loop');
+    expect(r.criteria![1].evidence).toContain("O(h)");
+    expect(r.notes).toContain("Understood the rules");
+  });
+  it("treats a criterion the model forgot as missed, as the normal path does", () => {
+    const partial = broken.replace(/\{"id": "rb:why"[^}]*\}/, "");
+    const r = salvagePhaseScorecard(partial, rubric, false)!;
+    expect(r.criteria!.find((c) => c.id === "rb:why")).toMatchObject({ credit: "missed" });
+  });
+  it("works on a reply that was cut off at the end", () => {
+    const cut = broken.slice(0, broken.indexOf('"notes"')).trimEnd();
+    const r = salvagePhaseScorecard(cut, rubric, false)!;
+    expect(r.criteria!.map((c) => c.credit)).toEqual(["met", "partial", "missed"]);
+  });
+  it("returns null when less than half of the criteria can be read", () => {
+    expect(salvagePhaseScorecard('{"criteria": [{"id": "understanding", "credit": "met", "evidence": "x"}', rubric, false)).toBeNull();
+    expect(salvagePhaseScorecard("I could not score this.", rubric, false)).toBeNull();
+  });
+  it("reads finalAnswerCorrect for puzzles only", () => {
+    const text = broken.replace('"notes"', '"finalAnswerCorrect": true, "notes"');
+    expect(salvagePhaseScorecard(text, rubric, true)!.finalAnswerCorrect).toBe(true);
+    expect(salvagePhaseScorecard(text, rubric, false)).not.toHaveProperty("finalAnswerCorrect");
+  });
+  it("is not needed for a valid reply: the normal parser handles it", () => {
+    const ok = '{"criteria":[{"id":"understanding","credit":"met","evidence":"x"}],"notes":"n"}';
+    expect(normalizePhaseScorecard(parseScorecardJSON(ok), rubric, false).criteria![0].credit).toBe("met");
   });
 });

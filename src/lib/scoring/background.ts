@@ -6,6 +6,11 @@ import { closePhasesOnEnd } from "../phase-store";
 /** Scores a finished interview and notifies its creator. Safe to call more than once. */
 export async function scoreInterviewInBackground(id: string, interview?: any): Promise<void> {
   if (!(await startScoring(id))) return;
+  await runScoring(id, interview, { notify: true });
+}
+
+/** The scoring run itself. The caller has already marked the interview as "generating" (startScoring). */
+export async function runScoring(id: string, interview?: any, opts: { notify: boolean } = { notify: true }): Promise<void> {
   try {
     const source = interview ?? (await getInterview(id));
     if (!source) throw new Error("Interview not found");
@@ -14,6 +19,7 @@ export async function scoreInterviewInBackground(id: string, interview?: any): P
     await updateInterview(id, { scorecard });
     await completeScoring(id);
     console.log(`[Auto-Score] Scorecard saved for interview ${id}`);
+    if (!opts.notify) return;
 
     try {
       const { pool } = await import("../db");

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { rescoreAndWait } from "@/lib/client/rescore";
 import { useParams, useSearchParams } from "next/navigation";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { ReviewPhases } from "@/components/dsa/ReviewPhases";
@@ -242,11 +243,7 @@ export default function ReviewPage() {
                 btn.disabled = true;
                 btn.textContent = "Generating...";
                 try {
-                  const res = await fetch("/api/scorecard", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ interviewId: id }),
-                  });
+                  const res = await rescoreAndWait(id);
                   if (res.ok) {
                     window.location.reload();
                   } else {
@@ -301,11 +298,7 @@ export default function ReviewPage() {
                 btn.disabled = true;
                 btn.textContent = "Rescoring...";
                 try {
-                  const res = await fetch("/api/scorecard", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ interviewId: id }),
-                  });
+                  const res = await rescoreAndWait(id);
                   if (res.ok) {
                     btn.textContent = "Done!";
                     setTimeout(() => window.location.reload(), 1000);

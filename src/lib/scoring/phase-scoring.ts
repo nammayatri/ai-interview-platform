@@ -1,6 +1,7 @@
 // Per-phase rubric scoring for the DSA Review round.
 // One summary-model call per completed phase judges each rubric criterion (met / partial / missed);
 // the server then rolls the credits up deterministically (see rollup.ts).
+import { aiLimits } from "../ai-limits";
 import { callSummaryAI, formatQAPairs, getLevelCalibration, pairQA } from "../ai";
 import { parseScorecardJSON } from "../parse-scorecard";
 import type { PhaseRow } from "../phase-engine";
@@ -101,15 +102,78 @@ For each criterion choose credit "met" (clearly demonstrated), "partial" (partly
 ## Interviewer question -> candidate answer pairs for this phase
 ${qa}
 
-Respond with ONLY valid JSON:
+Inside the evidence and notes text never use double quotes (use single quotes), so the JSON stays valid.\n\nRespond with ONLY valid JSON:
 {
   "criteria": [{"id": "<rubric id>", "credit": "met|partial|missed", "evidence": "<quote or paraphrase>"}],
   ${phase.phaseKey === "puzzle" ? '"finalAnswerCorrect": <true|false>,\n  ' : ""}"notes": "<2-4 sentences on the candidate's reasoning in this phase>"
 }`;
 }
 
-/** Scores one phase and persists the result. Never throws: failures are recorded on the phase. */
-export async function scorePhase(interview: Interview, phase: PhaseRow): Promise<PhaseScorecard> {
+/**
+ * Last resort for a reply that is not valid JSON (for example an unescaped quote inside an evidence string):
+ * pull each rubric criterion's credit, its evidence and the notes straight out of the text.
+ * Returns null unless at least half of the rubric's criteria could be read.
+ */
+export function salvagePhaseScorecard(raw: string, rubric: RubricCriterion[], isPuzzle: boolean): PhaseScorecard | null {
+  const escape = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const starts = rubric.map((r) => {
+    const m = new RegExp(`"id"\\s*:\\s*"${escape(r.id)}"`).exec(raw);
+    return m ? m.index : -1;
+  });
+  const found: ScoredCriterion[] = [];
+  rubric.forEach((r, i) => {
+    if (starts[i] < 0) return;
+    const next = starts.filter((x) => x > starts[i]).sort((x, y) => x - y)[0];
+    const chunk = raw.slice(starts[i], next ?? raw.length);
+    const credit = /"credit"\s*:\s*"(met|partial|missed)"/.exec(chunk)?.[1] as Credit | undefined;
+    if (!credit) return;
+    const ev = /"evidence"\s*:\s*"([\s\S]*)/.exec(chunk)?.[1] ?? "";
+    // evidence runs to the closing quote of this object; inner quotes are tolerated
+    const evidence = ev.replace(/"\s*\}\s*,?\s*(\]\s*,?\s*)?[\s\S]*$/, "").replace(/"\s*$/, "").trim().slice(0, 500);
+    found.push({ id: r.id, credit, evidence });
+  });
+  if (found.length < Math.ceil(rubric.length / 2)) return null;
+  const notes = /"notes"\s*:\s*"([\s\S]*?)"\s*\}?\s*$/.exec(raw.trim())?.[1] ?? "";
+  const fac = /"finalAnswerCorrect"\s*:\s*(true|false)/.exec(raw)?.[1];
+  const ids = found.map((f) => f.id);
+  return {
+    criteria: rubric.map((r) => found[ids.indexOf(r.id)] ?? { id: r.id, credit: "missed" as Credit, evidence: "" }),
+    ...(isPuzzle && fac ? { finalAnswerCorrect: fac === "true" } : {}),
+    notes,
+  };
+}
+
+/** Calls the scoring model and turns the reply into a PhaseScorecard: parse, else salvage, else ask once more. */
+async function scoreWithModel(interview: Interview, phase: PhaseRow, history: Awaited<ReturnType<typeof getPhaseTranscript>>, rubric: RubricCriterion[]): Promise<PhaseScorecard> {
+  const isPuzzle = phase.phaseKey === "puzzle";
+  const prompt = buildPhasePrompt(interview, phase, formatQAPairs(pairQA(history)));
+  let lastError = "";
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const raw = await callSummaryAI([{ role: "system", content: prompt }], aiLimits.phaseScoringMaxTokens(), 0.2);
+    try {
+      return normalizePhaseScorecard(parseScorecardJSON(raw), rubric, isPuzzle);
+    } catch (err) {
+      lastError = (err as Error).message;
+      const salvaged = salvagePhaseScorecard(raw, rubric, isPuzzle);
+      console.warn(`[PhaseScore] ${interview.id}/${phase.phaseKey} reply was not valid JSON (attempt ${attempt}, ${raw.length} chars): ${lastError.slice(0, 120)} | start: ${JSON.stringify(raw.slice(0, 80))} | end: ${JSON.stringify(raw.slice(-120))}`);
+      if (salvaged) {
+        console.warn(`[PhaseScore] ${interview.id}/${phase.phaseKey} recovered ${salvaged.criteria!.length} criteria from the malformed reply`);
+        return salvaged;
+      }
+    }
+  }
+  throw new Error(lastError || "The scoring model did not return usable JSON");
+}
+
+/**
+ * Scores one phase and persists the result. Never throws: failures are recorded on the phase.
+ * With reuse, a result already saved for this phase is kept (a retry after a failed run does not redo finished stages).
+ */
+export async function scorePhase(interview: Interview, phase: PhaseRow, opts: { reuse?: boolean } = {}): Promise<PhaseScorecard> {
+  if (opts.reuse && phase.scorecard && Array.isArray(phase.scorecard.criteria) && phase.scorecard.criteria.length > 0) {
+    console.log(`[PhaseScore] ${interview.id}/${phase.phaseKey} reusing the result saved earlier`);
+    return phase.scorecard as PhaseScorecard;
+  }
   const history = await getPhaseTranscript(interview.id, phase.phaseKey);
   const candidateEntries = history.filter((e) => e.role === "candidate").length;
   let result: PhaseScorecard;
@@ -121,8 +185,7 @@ export async function scorePhase(interview: Interview, phase: PhaseRow): Promise
     result = { skipped: true, reason: "No rubric available for this phase" };
   } else {
     try {
-      const raw = await callSummaryAI([{ role: "system", content: buildPhasePrompt(interview, phase, formatQAPairs(pairQA(history))) }], 2500, 0.2);
-      result = normalizePhaseScorecard(parseScorecardJSON(raw), rubric, phase.phaseKey === "puzzle");
+      result = await scoreWithModel(interview, phase, history, rubric);
     } catch (err) {
       console.error(`[PhaseScore] ${interview.id}/${phase.phaseKey} failed:`, (err as Error).message);
       result = { failed: true, reason: (err as Error).message.slice(0, 200) };
