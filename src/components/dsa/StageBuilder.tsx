@@ -43,9 +43,13 @@ export const emptyStagesForm = (): StagesForm => ({
   submission: emptySubmission(),
 });
 
-/** Total interview time: every enabled stage's time plus the closing reserve. */
+/**
+ * Total interview time: every enabled stage's time AND its grace, plus the closing reserve.
+ * Grace is included so that a stage that uses it does not squeeze the stages after it. Grace that is not used is not
+ * wasted: when the last stage finishes the interview closes straight away.
+ */
 export function computeDuration(f: StagesForm): number {
-  const total = f.stages.filter((s) => s.enabled).reduce((n, s) => n + s.budgetMin, 0) + CLOSE_RESERVE_MIN;
+  const total = f.stages.filter((s) => s.enabled).reduce((n, s) => n + s.budgetMin + s.graceMin, 0) + CLOSE_RESERVE_MIN;
   return Math.max(5, Math.min(180, total));
 }
 
@@ -221,7 +225,7 @@ export function StageBuilder({ form, onChange, partaQuestions, dsaProblems, puzz
       </ol>
 
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-indigo-50 px-4 py-3 text-sm text-indigo-900">
-        <span>Total interview time: <strong>{total} min</strong> <span className="text-indigo-600/80">(stages {total - CLOSE_RESERVE_MIN} + {CLOSE_RESERVE_MIN} min to close)</span></span>
+        <span>Total interview time: <strong>{total} min</strong> <span className="text-indigo-600/80">(stage times {form.stages.filter((s) => s.enabled).reduce((n, s) => n + s.budgetMin, 0)} + grace {form.stages.filter((s) => s.enabled).reduce((n, s) => n + s.graceMin, 0)} + {CLOSE_RESERVE_MIN} to close)</span></span>
         <span className="text-xs text-indigo-700">{form.stages.filter((s) => s.enabled).map((s) => STAGE_LABELS[s.key]).join(" → ") || "No stages"}</span>
       </div>
       {error && <p className="text-xs text-red-600" role="alert">{error}</p>}
