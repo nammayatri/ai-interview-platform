@@ -103,9 +103,11 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
     turn.addFinal(text);
   }, [turn]);
 
+  // What the candidate sees while speaking: everything finalized so far this turn plus the words still in progress.
+  // Showing only the in-progress part made earlier sentences vanish at every pause and reappear when the turn was sent.
   const handleInterimText = useCallback((text: string) => {
     turn.setInterim(text);
-    onInterimRef.current(text);
+    onInterimRef.current([turn.getBuffer(), text.trim()].filter(Boolean).join(" "));
   }, [turn]);
 
   // "Done" button: send everything said so far (including text still shown as interim) right now.

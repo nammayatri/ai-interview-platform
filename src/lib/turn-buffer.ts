@@ -81,6 +81,11 @@ export class TurnBuffer {
     return mergedInterim;
   }
 
+  /** Finalized text collected so far this turn (not yet sent). */
+  getBuffer(): string {
+    return this.buffer.trim();
+  }
+
   hasPending(): boolean {
     return !!(this.buffer.trim() || this.lastInterim.trim());
   }

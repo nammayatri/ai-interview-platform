@@ -161,7 +161,8 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   const [timeWarningShown, setTimeWarningShown] = useState(false);
   const [micEnabled, setMicEnabled] = useState(true);
   // Voice turn-taking: Auto (AI replies after a pause) or Manual (tap the mic / Ctrl+M to start, again to send)
-  const [manualVoice, setManualVoice] = useState(false);
+  // Manual (Ctrl+M to speak, Ctrl+M to send) is the default: nothing is cut off by a pause. The puzzle round is always manual.
+  const [manualPref, setManualPref] = useState(true);
   // AI voice on/off — off = text-only (the AI's replies are shown but not spoken)
   const [aiVoiceOn, setAiVoiceOn] = useState(true);
   const aiVoiceRef = useRef(true);
@@ -244,10 +245,12 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     sttBackend: "deepgram",
     sttAudio: "webm" as "webm" | "pcm16",
     silenceDelayMs: 6000,
+    autoVoiceEnabled: true,
   });
   useEffect(() => {
     fetch("/api/config").then(r => r.json()).then(cfg => {
       setRuntimeConfig(prev => ({ ...prev, ...cfg }));
+      if (cfg.autoVoiceEnabled !== false && cfg.defaultVoiceMode === "auto") setManualPref(false);
       console.log(`[Config] STT=${cfg.sttBackend} strikes=${cfg.maxProctoringStrikes} silence=${cfg.silenceDelayMs}ms env=${cfg.environment}`);
     }).catch(() => {});
   }, []);
@@ -287,10 +290,13 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   // ─── DSA Review: server-owned phases; the client only displays and reacts ───
   const isDsa = interviewData?.roundType === "DSA Review";
   const dsa = useDsaRoom({ interviewId, tokenRef, enabled: isDsa && isStarted });
+  const puzzleRound = isDsa && dsa.active?.phaseKey === "puzzle";
+  const manualVoice = manualPref || puzzleRound || !runtimeConfig.autoVoiceEnabled;
   const dsaRef = useRef(dsa);
   dsaRef.current = dsa;
   const isDsaRef = useRef(false);
   isDsaRef.current = isDsa;
+  const queuedEntriesRef = useRef<TranscriptEntry[]>([]);
   const transcriptRef = useRef<TranscriptEntry[]>([]);
   transcriptRef.current = transcript;
   const getAIResponseRef = useRef<(t: TranscriptEntry[], o?: { skipSave?: boolean; trigger?: "phase_open" }) => Promise<void>>();
@@ -741,11 +747,19 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   const getAIResponse = useCallback(
     async (currentTranscript: TranscriptEntry[], options?: { skipSave?: boolean; trigger?: "phase_open" }) => {
       if (isProcessingRef.current) {
-        console.warn("[AI] Already processing, skipping");
+        // The candidate answered while the AI was still busy. Remember it and answer as soon as the AI is free,
+        // instead of dropping the turn (the answer showed in the transcript but never got a reply).
+        if (!options?.skipSave && !options?.trigger) {
+          const seen = lastTranscriptRef.current;
+          const fresh = currentTranscript.filter((e) => e.role === "candidate" && !seen.includes(e) && !queuedEntriesRef.current.includes(e));
+          queuedEntriesRef.current = [...queuedEntriesRef.current, ...fresh];
+        }
+        console.warn("[AI] Already processing, queued the new answer");
         return;
       }
       if (isEndingRef.current) return;
       isProcessingRef.current = true;
+      queuedEntriesRef.current = [];
       setIsAIThinking(true);
       setAiError(false);
       lastTranscriptRef.current = currentTranscript;
@@ -914,6 +928,12 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         if (generationRef.current === thisGeneration) {
           isProcessingRef.current = false;
           setIsAIThinking(false);
+          const queued = queuedEntriesRef.current;
+          if (queued.length && !isEndingRef.current) {
+            // Answer what was said while the AI was busy. Those entries go last so the AI replies to them.
+            const next = [...transcriptRef.current.filter((e) => !queued.includes(e)), ...queued];
+            setTimeout(() => getAIResponseRef.current?.(next), 0);
+          }
           const pendingTransition = phaseTransitionRef.current;
           if (pendingTransition) {
             phaseTransitionRef.current = null;
@@ -2129,6 +2149,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         {/* Voice settings: quieter, secondary */}
         <div className="flex items-center gap-2">
         {/* Voice mode switch: Auto (AI replies after you pause) ⇄ Manual (you start/stop with the mic or Ctrl+M) */}
+        {runtimeConfig.autoVoiceEnabled && (
         <div className="flex items-center gap-1.5 rounded-full border border-zinc-800 px-2.5 py-1 opacity-80 hover:opacity-100" title="Auto: the AI replies after you pause. Manual: you decide when to start and stop speaking.">
           <span className={`text-[11px] font-medium ${!manualVoice ? "text-white" : "text-zinc-500"}`}>Auto</span>
           <button
@@ -2136,13 +2157,16 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
             role="switch"
             aria-checked={manualVoice}
             aria-label="Voice mode: automatic or manual"
-            onClick={() => setManualVoice((m) => !m)}
-            className={`relative h-6 w-11 rounded-full transition-colors ${manualVoice ? "bg-blue-500" : "bg-zinc-600"}`}
+            onClick={() => setManualPref((m) => !m)}
+            disabled={puzzleRound}
+            title={puzzleRound ? "The puzzle round always uses manual voice" : undefined}
+            className={`relative h-6 w-11 rounded-full transition-colors ${manualVoice ? "bg-blue-500" : "bg-zinc-600"} ${puzzleRound ? "cursor-not-allowed opacity-60" : ""}`}
           >
             <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${manualVoice ? "translate-x-5" : ""}`} />
           </button>
           <span className={`text-[11px] font-medium ${manualVoice ? "text-white" : "text-zinc-500"}`}>Manual</span>
         </div>
+        )}
         <button
           onClick={() => setAiVoiceOn((v) => !v)}
           title={aiVoiceOn ? "Turn the AI's voice off (replies are shown as text only)" : "Turn the AI's voice on"}
