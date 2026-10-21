@@ -9,16 +9,13 @@ import { DashboardLayout } from "@/components/DashboardLayout";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { DEFAULT_LATE_ENTRY_MIN, DEFAULT_OPENS_BEFORE_MIN } from "@/lib/batches-defaults";
 import { StageChips, type TemplateRow } from "@/components/templates/TemplatesPage";
+import { CandidatesTable, type BatchCandidate } from "./CandidatesTable";
 
 type Phase = "not_open" | "open" | "live" | "closed";
 interface BatchRow {
   id: string; name: string; joinPath: string; templateId: string | null; templateName: string; stages: any[]; level: string; role: string;
   startsAt: string; opensAt: string; closesAt: string; opensBeforeMin: number; lateEntryMin: number; maxCandidates: number | null;
   isClosed: boolean; phase: Phase; registered: number; started: number; completed: number; createdAt: string;
-}
-interface Candidate {
-  id: string; name: string; email: string; phone: string; resumeFileName: string; status: string; registeredAt: string;
-  startedAt: string | null; endedAt: string | null; scoringStatus: string | null; recommendation: string | null; overall: number | null;
 }
 
 const when = (iso: string) => new Date(iso).toLocaleString([], { weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -28,7 +25,6 @@ const PHASE: Record<Phase, { label: string; cls: string }> = {
   live: { label: "Live", cls: "badge-success" },
   closed: { label: "Closed", cls: "badge-danger" },
 };
-const REC: Record<string, string> = { strong_hire: "Strong hire", hire: "Hire", no_hire: "No hire", strong_no_hire: "Strong no hire" };
 // An <input type="datetime-local"> value, in the browser's own time zone.
 const toLocalInput = (d: Date) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 
@@ -207,7 +203,7 @@ export function BatchDetailPage({ id }: { id: string }) {
   const { data: session } = useSession();
   const role = (session?.user as any)?.role as string | undefined;
   const canEdit = role === "admin" || role === "interviewer";
-  const [batch, setBatch] = useState<(BatchRow & { candidates: Candidate[] }) | null>(null);
+  const [batch, setBatch] = useState<(BatchRow & { candidates: BatchCandidate[] }) | null>(null);
   const [missing, setMissing] = useState(false);
   const [edit, setEdit] = useState(false);
   const [startsAt, setStartsAt] = useState("");
@@ -218,7 +214,6 @@ export function BatchDetailPage({ id }: { id: string }) {
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [filter, setFilter] = useState("");
 
   const load = useCallback(async () => {
     const res = await fetch(`/api/batches/${id}`).catch(() => null);
@@ -257,28 +252,13 @@ export function BatchDetailPage({ id }: { id: string }) {
     if (res.ok) window.location.href = "/batches";
     else { const d = await res.json().catch(() => ({})); setError(d.error || "Could not delete."); setConfirmDelete(false); }
   };
-  const exportCsv = () => {
-    if (!batch) return;
-    const cell = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
-    const lines = [["name", "email", "phone", "status", "recommendation", "overall", "registered_at"].join(",")].concat(
-      batch.candidates.map((c) => [c.name, c.email, c.phone, c.status, c.recommendation ? REC[c.recommendation] || c.recommendation : "", c.overall ?? "", c.registeredAt].map((v) => cell(String(v))).join(","))
-    );
-    const url = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" }));
-    const a = document.createElement("a"); a.href = url; a.download = `${batch.name.replace(/[^\w-]+/g, "_")}-candidates.csv`; a.click(); URL.revokeObjectURL(url);
-  };
 
   if (missing) return <DashboardLayout><div className="card mx-auto max-w-xl p-10 text-center text-sm text-gray-600">This batch was not found. <Link href="/batches" className="text-indigo-600">Back to batches</Link></div></DashboardLayout>;
   if (!batch) return <DashboardLayout><div className="flex justify-center py-20"><div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" /></div></DashboardLayout>;
 
-  const shown = batch.candidates.filter((c) => !filter.trim() || `${c.name} ${c.email} ${c.phone}`.toLowerCase().includes(filter.trim().toLowerCase()));
-  const statusBadge = (c: Candidate) =>
-    c.status === "completed" ? <span className="badge-success">Completed</span>
-    : c.status === "in_progress" ? <span className="badge-info animate-pulse">In progress</span>
-    : <span className="badge-warning">Waiting</span>;
-
   return (
     <DashboardLayout>
-      <div className="mx-auto max-w-5xl space-y-6">
+      <div className="mx-auto max-w-6xl space-y-6">
         <div className="text-sm"><Link href="/batches" className="text-gray-500 hover:text-gray-700">Batches</Link> <span className="text-gray-400">/</span> <span className="font-medium text-gray-900">{batch.name}</span></div>
 
         <div className="card space-y-4 p-6">
@@ -326,42 +306,12 @@ export function BatchDetailPage({ id }: { id: string }) {
           </form>
         )}
 
-        <div className="card p-6">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-gray-600">
-              <span><span className="text-lg font-semibold text-gray-900">{batch.registered}</span> registered{batch.maxCandidates ? ` of ${batch.maxCandidates}` : ""}</span>
-              <span><span className="text-lg font-semibold text-gray-900">{batch.started}</span> started</span>
-              <span><span className="text-lg font-semibold text-gray-900">{batch.completed}</span> completed</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <input className="input-field !w-56" placeholder="Search name, email, phone" value={filter} onChange={(e) => setFilter(e.target.value)} />
-              <button className="btn-secondary" onClick={exportCsv} disabled={batch.candidates.length === 0}>Export CSV</button>
-            </div>
-          </div>
-          {batch.candidates.length === 0 ? (
-            <p className="py-10 text-center text-sm text-gray-500">Nobody has registered yet.</p>
-          ) : (
-            <div className="mt-4 overflow-x-auto">
-              <table className="min-w-full text-left text-sm">
-                <thead className="text-xs uppercase tracking-wider text-gray-500">
-                  <tr><th className="py-2 pr-4">Candidate</th><th className="py-2 pr-4">Phone</th><th className="py-2 pr-4">Registered</th><th className="py-2 pr-4">Status</th><th className="py-2 pr-4">Result</th></tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {shown.map((c) => (
-                    <tr key={c.id}>
-                      <td className="py-2.5 pr-4"><Link href={c.status === "completed" ? `/review/${c.id}` : `/dashboard/${c.id}`} className="font-medium text-gray-900 hover:text-indigo-700">{c.name || "(no name)"}</Link><div className="text-xs text-gray-500">{c.email}</div></td>
-                      <td className="py-2.5 pr-4 text-gray-600">{c.phone}</td>
-                      <td className="py-2.5 pr-4 text-gray-600">{new Date(c.registeredAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</td>
-                      <td className="py-2.5 pr-4">{statusBadge(c)}</td>
-                      <td className="py-2.5 pr-4 text-gray-700">{c.recommendation ? `${REC[c.recommendation] || c.recommendation}${c.overall !== null ? ` · ${c.overall}` : ""}` : c.scoringStatus === "generating" ? "Scoring…" : "-"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {shown.length === 0 && <p className="py-6 text-center text-sm text-gray-500">No candidate matches that search.</p>}
-            </div>
-          )}
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-gray-600">
+          <span><span className="text-lg font-semibold text-gray-900">{batch.registered}</span> registered{batch.maxCandidates ? ` of ${batch.maxCandidates}` : ""}</span>
+          <span><span className="text-lg font-semibold text-gray-900">{batch.started}</span> started</span>
+          <span><span className="text-lg font-semibold text-gray-900">{batch.completed}</span> completed</span>
         </div>
+        <CandidatesTable candidates={batch.candidates} batchName={batch.name} />
       </div>
       <ConfirmModal open={confirmDelete} title="Delete this batch?" message="The link stops working. A batch with registered candidates cannot be deleted, close it instead." confirmLabel="Delete" onConfirm={remove} onCancel={() => setConfirmDelete(false)} />
     </DashboardLayout>

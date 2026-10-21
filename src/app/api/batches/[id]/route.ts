@@ -26,9 +26,12 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const b = await loadBatch(id, auth.user.orgId);
   if (!b) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const { rows } = await pool.query(
-    `SELECT id, candidate_name, candidate_email, candidate_phone, resume_file_name, status, created_at, started_at, ended_at, scoring_status,
-            scorecard->>'recommendation' AS recommendation, scorecard->>'overall' AS overall
-     FROM interviews WHERE batch_id = $1 ORDER BY created_at DESC LIMIT 5000`,
+    `SELECT i.id, i.candidate_name, i.candidate_email, i.candidate_phone, i.resume_file_name, i.role, i.level, i.status,
+            i.created_at, i.started_at, i.ended_at, i.scoring_status,
+            i.scorecard->>'recommendation' AS recommendation, i.scorecard->>'overall' AS overall,
+            (SELECT count(*) FROM proctoring_events p WHERE p.interview_id = i.id AND p.severity = 'flag') AS flags,
+            (SELECT count(*) FROM proctoring_events p WHERE p.interview_id = i.id AND p.severity = 'warning') AS warnings
+     FROM interviews i WHERE i.batch_id = $1 ORDER BY i.created_at DESC LIMIT 5000`,
     [id]
   );
   return NextResponse.json({
@@ -39,6 +42,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       email: r.candidate_email || "",
       phone: r.candidate_phone || "",
       resumeFileName: r.resume_file_name || "",
+      role: r.role || "",
+      level: r.level || "",
       status: r.status,
       registeredAt: r.created_at?.toISOString?.() ?? r.created_at,
       startedAt: r.started_at?.toISOString?.() ?? r.started_at ?? null,
@@ -46,6 +51,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       scoringStatus: r.scoring_status || null,
       recommendation: r.recommendation || null,
       overall: r.overall !== null && r.overall !== undefined ? Number(r.overall) : null,
+      flags: Number(r.flags ?? 0),
+      warnings: Number(r.warnings ?? 0),
     })),
   });
 }
