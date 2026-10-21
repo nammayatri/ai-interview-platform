@@ -7,6 +7,7 @@ import { isTalkShortcut } from "@/lib/push-to-talk";
 import { AudioRecorder } from "./AudioRecorder";
 import { ScreenShare } from "./ScreenShare";
 import Proctoring from "./Proctoring";
+import { formatCountdown } from "@/lib/countdown";
 import { useDsaRoom, type PhaseTransitionFromServer } from "./dsa/useDsaRoom";
 import { ProblemPanel } from "./dsa/ProblemPanel";
 import { PuzzlePanel } from "./dsa/PuzzlePanel";
@@ -29,6 +30,8 @@ interface InterviewData {
   duration: number; // in minutes
   startedAt?: string;
   roundType?: string;
+  /** Set when the interview was registered through a batch join link. */
+  batch?: { name: string; phase: "not_open" | "open" | "live" | "closed"; startsAt: string; closesAt: string; serverNow: string };
 }
 
 interface ProctoringAlert {
@@ -174,6 +177,10 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   const [proctoringWarnings, setProctoringWarnings] = useState(0);
   const [showProctoringBan, setShowProctoringBan] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  // Batch interviews: the test cannot start before the batch start time. The countdown follows the server clock.
+  const [clockOffsetMs, setClockOffsetMs] = useState(0);
+  const [, setClockTick] = useState(0);
+  const [startError, setStartError] = useState("");
   const [needsFullscreenClick, setNeedsFullscreenClick] = useState(false);
   const [fullscreenCountdown, setFullscreenCountdown] = useState(0);
   const [isEnding, setIsEnding] = useState(false);
@@ -302,6 +309,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
           return;
         }
         setInterviewData(interview);
+        if (interview.batch?.serverNow) setClockOffsetMs(new Date(interview.batch.serverNow).getTime() - Date.now());
         if (interview.roundType === "DSA Review") dsaRef.current.load(interview, { initialScratchpad: true });
 
         // Resume interview if already started (in_progress OR has startedAt)
@@ -989,6 +997,32 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       console.warn("Fullscreen request denied:", err);
     }
 
+    // A batch interview may only begin once the server agrees the start time has come. Ask first, and stay in the
+    // lobby with the reason when it says no (an early click, a wrong clock, or a closed entry window).
+    let startedOnServer = false;
+    if (interviewData?.batch) {
+      try {
+        const res = await fetch(`/api/interview/${interviewId}/start`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: tokenRef.current }),
+        });
+        if (!res.ok) {
+          const j = await res.json().catch(() => ({}));
+          if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+          if (j?.serverNow) setClockOffsetMs(new Date(j.serverNow).getTime() - Date.now());
+          setStartError(j?.error || "The test could not be started. Please try again.");
+          return;
+        }
+        startedOnServer = true;
+        setStartError("");
+      } catch {
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+        setStartError("Could not reach the server. Check your connection and try again.");
+        return;
+      }
+    }
+
     // Initialize countdown from interview duration (default 30 min)
     const durationMinutes = interviewData?.duration || 30;
     setRemainingSeconds(durationMinutes * 60);
@@ -996,11 +1030,13 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
 
     // Mark interview as in_progress
     try {
-      await fetch(`/api/interview/${interviewId}/start`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: tokenRef.current }),
-      });
+      if (!startedOnServer) {
+        await fetch(`/api/interview/${interviewId}/start`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: tokenRef.current }),
+        });
+      }
       if (interviewData?.roundType === "DSA Review") await dsaRef.current.refresh();
     } catch (err) {
       console.error("Failed to start interview:", err);
@@ -1212,10 +1248,52 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     return () => clearInterval(decay);
   }, [isStarted]);
 
+  // One tick a second while a batch candidate is waiting, so the countdown moves and the Start button unlocks on time.
+  const waitingOnBatch = !!interviewData?.batch && !isStarted;
+  useEffect(() => {
+    if (!waitingOnBatch) return;
+    const t = setInterval(() => setClockTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [waitingOnBatch]);
+
+  const batchInfo = interviewData?.batch;
+  const batchNow = Date.now() + clockOffsetMs;
+  const batchWaitMs = batchInfo && !isStarted ? Math.max(0, new Date(batchInfo.startsAt).getTime() - batchNow) : 0;
+  const batchClosed = !!batchInfo && !isStarted && (batchInfo.phase === "closed" || batchNow > new Date(batchInfo.closesAt).getTime());
+  const batchBanner = batchInfo && !isStarted && !batchClosed ? (
+    <div className={`w-full max-w-md rounded-xl border px-4 py-3 text-center ${batchWaitMs > 0 ? "border-blue-500/30 bg-blue-500/10" : "border-emerald-500/30 bg-emerald-500/10"}`}>
+      {batchWaitMs > 0 ? (
+        <>
+          <p className="text-xs uppercase tracking-wider text-blue-300">{batchInfo.name}</p>
+          <p className="mt-1 text-sm text-zinc-300">The test starts in</p>
+          <p className="font-mono text-3xl font-semibold text-white">{formatCountdown(batchWaitMs)}</p>
+          <p className="mt-1 text-xs text-zinc-400">You can finish the setup checks now. Keep this page open.</p>
+        </>
+      ) : (
+        <p className="text-sm font-medium text-emerald-300">The test has started. You can enter now.</p>
+      )}
+    </div>
+  ) : null;
+
   if (isLoading) {
     return (
       <div className="flex h-screen items-center justify-center">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+      </div>
+    );
+  }
+
+  // ─── Batch entry window closed ─────────────────────────────────────────────
+  if (batchClosed) {
+    return (
+      <div className="flex h-screen items-center justify-center px-4">
+        <div className="glass w-full max-w-sm rounded-2xl p-8 text-center">
+          <div className="mb-4 text-4xl text-zinc-500">&#9202;</div>
+          <h2 className="text-xl font-semibold text-white">This session has closed</h2>
+          <p className="mt-3 text-sm text-zinc-400">
+            The entry window for {batchInfo?.name || "this session"} is over, so the test can no longer be started. Please contact the organiser.
+          </p>
+        </div>
       </div>
     );
   }
@@ -1300,7 +1378,8 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   // ─── Recording Consent Screen ─────────────────────────────────────────────
   if (!consentGiven) {
     return (
-      <div className="flex h-screen items-center justify-center px-4">
+      <div className="flex min-h-screen flex-col items-center justify-center gap-4 px-4 py-6">
+        {batchBanner}
         <div className="glass w-full max-w-md rounded-2xl p-8">
           <div className="mb-6 flex items-center justify-center">
             <div className="flex h-14 w-14 items-center justify-center rounded-full bg-blue-500/15">
@@ -1409,7 +1488,8 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   // ─── Pre-Interview Setup Screen ───────────────────────────────────────────
   if (!isStarted) {
     return (
-      <div className="flex h-screen flex-col items-center justify-center gap-8 px-4">
+      <div className="flex min-h-screen flex-col items-center justify-center gap-8 px-4 py-6">
+        {batchBanner}
         <h1 className="text-2xl font-semibold text-white">
           {interviewData?.title || "Interview Setup"}
         </h1>
@@ -1529,11 +1609,12 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         {/* Start Button */}
         <button
           onClick={handleStartInterview}
-          disabled={!cameraReady || !micReady || (!screenSharing && !isMobile)}
+          disabled={!cameraReady || !micReady || (!screenSharing && !isMobile) || batchWaitMs > 0}
           className="glow-blue rounded-xl bg-blue-600 px-10 py-3.5 text-lg font-semibold text-white transition-all hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
         >
-          {!screenSharing && !isMobile ? "Share screen to continue" : "Start Interview"}
+          {!screenSharing && !isMobile ? "Share screen to continue" : batchWaitMs > 0 ? `Starts in ${formatCountdown(batchWaitMs)}` : "Start Interview"}
         </button>
+        {startError && <p className="max-w-md text-center text-sm text-red-400" role="alert">{startError}</p>}
       </div>
     );
   }

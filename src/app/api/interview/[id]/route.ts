@@ -5,6 +5,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { pool } from "@/lib/db";
 import { projectInterviewForCandidate } from "@/lib/candidate-projection";
+import { getInterviewBatch } from "@/lib/batches-api";
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -52,7 +53,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   // The candidate room always passes ?token=, so anything fetched that way is projected, even when the browser
   // also holds an interviewer session (e.g. an interviewer previewing the link). Interviewer pages omit the token.
   const candidateView = !session || !!url.searchParams.get("token");
-  return NextResponse.json(candidateView ? projectInterviewForCandidate(interview) : interview);
+  const batch = await getInterviewBatch(id);
+  const body = candidateView ? projectInterviewForCandidate(interview) : interview;
+  return NextResponse.json(batch ? { ...body, batch } : body);
 }
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {

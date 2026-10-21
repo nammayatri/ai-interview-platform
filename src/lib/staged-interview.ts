@@ -135,6 +135,10 @@ export interface CreateStagedArgs {
   focusAreas?: string[];
   language?: string;
   input: StagesCreateInput;
+  /** Set when the interview is a registration in a batch (shared join link). */
+  batchId?: string;
+  /** Overrides the default 7-day link expiry. */
+  expiresAt?: Date;
 }
 
 /** Writes the interview, the Part A submission and every stage's snapshot in one transaction. */
@@ -145,8 +149,8 @@ export async function createStagedInterview(a: CreateStagedArgs): Promise<{ id: 
   }
   const id = randomUUID();
   const token = randomBytes(32).toString("hex");
-  const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + 7); // the link expires 7 days from now
+  const expiresAt = a.expiresAt ?? new Date();
+  if (!a.expiresAt) expiresAt.setDate(expiresAt.getDate() + 7); // the link expires 7 days from now
 
   const interview: Interview = {
     id,
@@ -179,6 +183,7 @@ export async function createStagedInterview(a: CreateStagedArgs): Promise<{ id: 
   try {
     await client.query("BEGIN");
     await saveInterview(interview, client);
+    if (a.batchId) await client.query("UPDATE interviews SET batch_id = $1 WHERE id = $2", [a.batchId, id]);
     await insertStages(client, id, a.input);
     await client.query("COMMIT");
   } catch (err) {

@@ -17,6 +17,7 @@ export const config = {
     "/parta/:path*",
     "/runbooks/:path*",
     "/interview-templates/:path*",
+    "/batches/:path*",
     "/compare/:path*",
     "/team/:path*",
     "/templates/:path*",
