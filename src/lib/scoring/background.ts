@@ -25,6 +25,9 @@ export async function runScoring(id: string, interview?: any, opts: { notify: bo
 
     try {
       const { pool } = await import("../db");
+      // Batch interviews can be hundreds: one email each to the batch owner would be spam. They read results on the batch page.
+      const { rows: batchRows } = await pool.query("SELECT batch_id FROM interviews WHERE id = $1", [id]).catch(() => ({ rows: [] as any[] }));
+      if (batchRows[0]?.batch_id) return;
       const { sendInterviewComplete } = await import("../email");
       const { rows: userRows } = await pool.query(
         "SELECT u.email, u.name FROM users u JOIN interviews i ON u.id = i.created_by WHERE i.id = $1",

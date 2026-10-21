@@ -2,6 +2,7 @@
 
 // Interview batches: one shared join link for many candidates. The list/create page and the detail page.
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
 import { DashboardLayout } from "@/components/DashboardLayout";
@@ -49,6 +50,7 @@ function CopyLink({ path }: { path: string }) {
 // ─── List + create ───────────────────────────────────────────────────────────
 
 export function BatchesPage() {
+  const router = useRouter();
   const { data: session } = useSession();
   const role = (session?.user as any)?.role as string | undefined;
   const canEdit = role === "admin" || role === "interviewer";
@@ -164,20 +166,32 @@ export function BatchesPage() {
         ) : (
           <div className="space-y-3">
             {items.map((b) => (
-              <div key={b.id} className="card p-5">
+              <div
+                key={b.id}
+                role="link"
+                tabIndex={0}
+                aria-label={`Open ${b.name} and see its candidates`}
+                onClick={() => router.push(`/batches/${b.id}`)}
+                onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); router.push(`/batches/${b.id}`); } }}
+                className="card-hover cursor-pointer p-5 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+              >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <Link href={`/batches/${b.id}`} className="text-base font-semibold text-gray-900 hover:text-indigo-700">{b.name}</Link>
+                    <p className="text-base font-semibold text-gray-900">{b.name}</p>
                     <p className="mt-0.5 text-sm text-gray-500">{b.templateName} · starts {when(b.startsAt)}</p>
                   </div>
                   <PhaseBadge phase={b.phase} />
                 </div>
-                <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-gray-600">
-                  <span><span className="font-semibold text-gray-900">{b.registered}</span> registered</span>
-                  <span><span className="font-semibold text-gray-900">{b.started}</span> started</span>
-                  <span><span className="font-semibold text-gray-900">{b.completed}</span> completed</span>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-1 text-sm text-gray-600">
+                  <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
+                    <span><span className="font-semibold text-gray-900">{b.registered}</span> registered</span>
+                    <span><span className="font-semibold text-gray-900">{b.started}</span> started</span>
+                    <span><span className="font-semibold text-gray-900">{b.completed}</span> completed</span>
+                  </div>
+                  <span className="text-sm font-medium text-indigo-600">View candidates &rarr;</span>
                 </div>
-                <div className="mt-3"><CopyLink path={b.joinPath} /></div>
+                {/* The link box has its own clicks (select, copy); they must not open the batch */}
+                <div className="mt-3" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}><CopyLink path={b.joinPath} /></div>
               </div>
             ))}
           </div>

@@ -6,14 +6,17 @@ import { authOptions } from "@/lib/auth";
 import { pool } from "@/lib/db";
 import { projectInterviewForCandidate } from "@/lib/candidate-projection";
 import { getInterviewBatch } from "@/lib/batches-api";
+import { isValidShareKey, shareKeyFor } from "@/lib/share-key";
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const url = new URL(req.url);
 
   // Share mode: read-only access for completed interviews — strip all PII
-  const shareMode = url.searchParams.get("share") === "true";
-  if (shareMode) {
+  // The link must carry the key made for this interview; the interview id alone (which the candidate also has) is not enough.
+  const shareParam = url.searchParams.get("share");
+  if (shareParam) {
+    if (!isValidShareKey(id, shareParam)) return NextResponse.json({ error: "Not available for sharing" }, { status: 404 });
     const interview = await getInterview(id);
     if (interview && interview.status === "completed") {
       return NextResponse.json({
@@ -54,7 +57,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   // also holds an interviewer session (e.g. an interviewer previewing the link). Interviewer pages omit the token.
   const candidateView = !session || !!url.searchParams.get("token");
   const batch = await getInterviewBatch(id);
-  const body = candidateView ? projectInterviewForCandidate(interview) : interview;
+  // A candidate never receives the scorecard, even though the room reads the rest of this record.
+  const body: any = candidateView ? { ...projectInterviewForCandidate(interview), scorecard: null } : { ...interview, shareKey: shareKeyFor(id) };
   return NextResponse.json(batch ? { ...body, batch } : body);
 }
 

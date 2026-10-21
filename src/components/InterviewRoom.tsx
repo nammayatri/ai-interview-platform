@@ -8,6 +8,7 @@ import { AudioRecorder } from "./AudioRecorder";
 import { ScreenShare } from "./ScreenShare";
 import Proctoring from "./Proctoring";
 import { formatCountdown } from "@/lib/countdown";
+import { ResizeHandle } from "./ResizeHandle";
 import { useDsaRoom, type PhaseTransitionFromServer } from "./dsa/useDsaRoom";
 import { ProblemPanel } from "./dsa/ProblemPanel";
 import { PuzzlePanel } from "./dsa/PuzzlePanel";
@@ -181,6 +182,30 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   const [clockOffsetMs, setClockOffsetMs] = useState(0);
   const [, setClockTick] = useState(0);
   const [startError, setStartError] = useState("");
+  // Resizable panels (desktop): sizes in percent, remembered in this browser. Double-click a handle to reset.
+  const [layout, setLayout] = useState<{ left: number | null; problem: number; scratch: number }>({ left: null, problem: 68, scratch: 42 });
+  const [isLg, setIsLg] = useState(false);
+  const mainRef = useRef<HTMLDivElement>(null);
+  const leftColRef = useRef<HTMLDivElement>(null);
+  const rightColRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const sync = () => setIsLg(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    try {
+      const saved = JSON.parse(localStorage.getItem("interview-layout-v1") || "null");
+      if (saved && typeof saved === "object") setLayout((l) => ({ left: typeof saved.left === "number" ? saved.left : l.left, problem: typeof saved.problem === "number" ? saved.problem : l.problem, scratch: typeof saved.scratch === "number" ? saved.scratch : l.scratch }));
+    } catch { /* no saved layout */ }
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+  const changeLayout = (patch: Partial<{ left: number | null; problem: number; scratch: number }>) =>
+    setLayout((l) => {
+      const next = { ...l, ...patch };
+      try { localStorage.setItem("interview-layout-v1", JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  const pctOf = (value: number, start: number, size: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, ((value - start) / size) * 100));
   const [needsFullscreenClick, setNeedsFullscreenClick] = useState(false);
   const [fullscreenCountdown, setFullscreenCountdown] = useState(0);
   const [isEnding, setIsEnding] = useState(false);
@@ -1691,11 +1716,11 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       )}
 
       {/* Main Content */}
-      <div className={`flex flex-col lg:flex-row flex-1 gap-2 sm:gap-3 p-2 sm:p-3 ${isDsa ? "overflow-y-auto lg:overflow-hidden" : "overflow-hidden"}`}>
+      <div ref={mainRef} className={`flex flex-col lg:flex-row flex-1 gap-2 sm:gap-3 lg:gap-0 p-2 sm:p-3 ${isDsa ? "overflow-y-auto lg:overflow-hidden" : "overflow-hidden"}`}>
         {/* Left: (DSA Review: problem / puzzle panel) + Video + AI Avatar */}
-        <div className={`flex ${isDsa ? "flex-[11] min-h-0" : "flex-[5]"} flex-col gap-2 sm:gap-3`}>
+        <div ref={leftColRef} className={`flex ${isDsa ? "flex-[11] min-h-0" : "flex-[5]"} flex-col gap-2 sm:gap-3 lg:gap-0`} style={isLg ? { flex: `0 0 ${layout.left ?? (isDsa ? 55 : 62)}%`, minWidth: 0 } : undefined}>
           {isDsa && (
-            <div className="flex min-h-[320px] flex-[3] lg:min-h-0">
+            <div className="flex min-h-[320px] flex-[3] lg:min-h-0" style={isLg ? { flex: `0 0 ${layout.problem}%` } : undefined}>
               {dsa.active?.phaseKey === "puzzle" && dsa.active.selected ? (
                 <PuzzlePanel title={dsa.active.selected.title} statementMd={dsa.active.selected.runbook.statementMd} />
               ) : dsa.active?.phaseKey === "dsa" && dsa.active.selected ? (
@@ -1713,8 +1738,13 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
               )}
             </div>
           )}
+          {isDsa && (
+            <ResizeHandle direction="row" label="Resize the problem and camera panels"
+              onDrag={(_x, y) => { const r = leftColRef.current?.getBoundingClientRect(); if (r) changeLayout({ problem: pctOf(y, r.top, r.height, 20, 85) }); }}
+              onReset={() => changeLayout({ problem: 68 })} />
+          )}
           {/* Video Feed */}
-          <div className={`relative ${isDsa ? "flex-[1] min-h-[130px] lg:max-h-[200px]" : "flex-[3] min-h-[150px] sm:min-h-[200px]"} lg:min-h-0 overflow-hidden rounded-xl sm:rounded-2xl border border-white/5 bg-zinc-900`}>
+          <div className={`relative ${isDsa ? "flex-[1] min-h-[130px]" : "flex-[3] min-h-[150px] sm:min-h-[200px]"} lg:min-h-[90px] overflow-hidden rounded-xl sm:rounded-2xl border border-white/5 bg-zinc-900`} style={isLg ? { flex: "1 1 0" } : undefined}>
             <video
               ref={videoCallbackRef}
               autoPlay
@@ -1797,7 +1827,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
 
           {/* Current AI Subtitle — below video */}
           {currentAIText && (
-            <div className="glass rounded-xl px-4 py-3">
+            <div className="glass rounded-xl px-4 py-3 lg:mt-2">
               <p className="text-sm leading-relaxed text-blue-300">
                 <span className="mr-2 text-xs font-semibold text-blue-500">ALEX:</span>
                 {currentAIText}
@@ -1806,16 +1836,24 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
           )}
         </div>
 
+        <ResizeHandle direction="col" label="Resize the left and right panels"
+          onDrag={(x) => { const r = mainRef.current?.getBoundingClientRect(); if (r) changeLayout({ left: pctOf(x, r.left, r.width, 25, 75) }); }}
+          onReset={() => changeLayout({ left: null })} />
         {/* Right: (DSA Review: scratchpad) + Live Transcript + Screen Share */}
-        <div className={`flex ${isDsa ? "flex-[9]" : "flex-[3]"} flex-col gap-3 min-h-0`}>
+        <div ref={rightColRef} className={`flex ${isDsa ? "flex-[9]" : "flex-[3]"} flex-col gap-3 lg:gap-0 min-h-0`} style={isLg ? { flex: "1 1 0", minWidth: 0 } : undefined}>
           {isDsa && (
-            <div className="flex min-h-[160px] flex-[2] lg:min-h-0">
+            <div className="flex min-h-[160px] flex-[2] lg:min-h-0" style={isLg ? { flex: `0 0 ${layout.scratch}%` } : undefined}>
               <Scratchpad interviewId={interviewId} token={tokenRef.current} value={dsa.scratchpad} onChange={dsa.setScratchpad} placeholder={dsa.active?.phaseKey === "dsa" ? "Write your approach and code here. It is typed only and is not executed." : undefined} />
             </div>
           )}
+          {isDsa && (
+            <ResizeHandle direction="row" label="Resize the scratchpad and transcript panels"
+              onDrag={(_x, y) => { const r = rightColRef.current?.getBoundingClientRect(); if (r) changeLayout({ scratch: pctOf(y, r.top, r.height, 15, 80) }); }}
+              onReset={() => changeLayout({ scratch: 42 })} />
+          )}
           {/* Screen Share Status */}
           {screenSharing && (
-            <div className="glass rounded-2xl px-3 py-2 hidden lg:flex items-center gap-2">
+            <div className="glass rounded-2xl px-3 py-2 hidden lg:flex items-center gap-2 lg:my-2">
               <span className="relative flex h-2 w-2">
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
@@ -1823,7 +1861,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
               <span className="text-xs text-green-400">Screen sharing active</span>
             </div>
           )}
-          <div className={`glass ${isDsa ? "flex-[3] min-h-[220px] lg:min-h-0" : "flex-1"} flex flex-col rounded-2xl min-h-0 relative`}>
+          <div className={`glass ${isDsa ? "flex-[3] min-h-[220px] lg:min-h-0" : "flex-1"} flex flex-col rounded-2xl min-h-0 relative`} style={isLg ? { flex: "1 1 0" } : undefined}>
             <div className="flex-1 overflow-y-auto p-4 relative" ref={transcriptScrollRef} onScroll={handleTranscriptScroll}>
             <h3 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5">

@@ -9,6 +9,9 @@ describe("parseJudgeVerdict", () => {
     const v = parseJudgeVerdict('Sure.\n```json\n{"verdict":"wrong_reasoning","note":"  a chain   of one child "}\n```');
     expect(v).toEqual({ verdict: "wrong_reasoning", note: "a chain of one child" });
   });
+  it("reads the hint verdict", () => {
+    expect(parseJudgeVerdict('{"verdict":"asks_for_hint"}')?.verdict).toBe("asks_for_hint");
+  });
   it("rejects unknown verdicts and garbage", () => {
     expect(parseJudgeVerdict('{"verdict":"great"}')).toBeNull();
     expect(parseJudgeVerdict("not json")).toBeNull();
@@ -28,6 +31,16 @@ describe("directiveFor", () => {
     const d = directiveFor({ verdict: "wrong_reasoning", note: "a tree where every node has one child" })!;
     expect(d).toContain("every node has one child");
     expect(d).toMatch(/do NOT give the correct answer/i);
+  });
+  it("a hint request gets nothing when no hint is unlocked", () => {
+    const d = directiveFor({ verdict: "asks_for_hint", note: "" })!;
+    expect(d).toMatch(/none is unlocked/);
+    expect(d).toMatch(/Give NO hint/);
+  });
+  it("a hint request gets only the unlocked hint, with nothing added", () => {
+    const d = directiveFor({ verdict: "asks_for_hint", note: "" }, { hintUnlocked: true })!;
+    expect(d).toMatch(/give ONLY that hint/);
+    expect(d).toMatch(/\[HINT:n\]/);
   });
   it("makes repeat verbatim", () => {
     expect(directiveFor({ verdict: "repeat_request", note: "" })).toMatch(/word for word/);

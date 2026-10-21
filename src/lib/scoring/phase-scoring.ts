@@ -94,6 +94,8 @@ ${reference}
 HINTS THE CANDIDATE RECEIVED (the system applies the score discount; do not penalize twice, but a criterion that depended on the hint was not met independently):
 ${hints}
 
+INTERVIEWER-SUPPLIED CONTENT: if the interviewer's own words stated or strongly led to a key idea (a list of outcomes, a structure, a number, an example) and the candidate then only repeated, agreed with or applied it, that criterion was not met independently: give at most "partial", and "missed" when the candidate added nothing of their own. Credit what the candidate produced themselves.
+
 RUBRIC (judge every criterion by its id):
 ${rubric.map((r) => `- id "${r.id}" (weight ${r.weight}): ${r.text}`).join("\n")}
 

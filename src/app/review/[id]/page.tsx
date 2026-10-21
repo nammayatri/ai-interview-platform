@@ -34,6 +34,7 @@ interface TranscriptMessage {
 
 interface InterviewData {
   id: string;
+  shareKey?: string | null;
   candidateName: string;
   role: string;
   level: string;
@@ -148,7 +149,8 @@ export default function ReviewPage() {
   const params = useParams();
   const searchParams = useSearchParams();
   const id = params.id as string;
-  const isShareMode = searchParams.get("share") === "true";
+  const shareParam = searchParams.get("share") || "";
+  const isShareMode = !!shareParam;
   const [data, setData] = useState<InterviewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -158,7 +160,7 @@ export default function ReviewPage() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const res = await fetch(`/api/interview/${id}${isShareMode ? "?share=true" : ""}`);
+        const res = await fetch(`/api/interview/${id}${isShareMode ? `?share=${encodeURIComponent(shareParam)}` : ""}`);
         if (!res.ok) throw new Error("Interview not found");
         const json = await res.json();
 
@@ -328,7 +330,8 @@ export default function ReviewPage() {
             </button>
             <button
               onClick={() => {
-                const shareUrl = `${window.location.origin}/review/${id}?share=true`;
+                if (!data?.shareKey) return;
+                const shareUrl = `${window.location.origin}/review/${id}?share=${data.shareKey}`;
                 navigator.clipboard.writeText(shareUrl);
                 setShareCopied(true);
                 setTimeout(() => setShareCopied(false), 2000);

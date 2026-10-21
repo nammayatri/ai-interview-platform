@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { pool } from "@/lib/db";
 import { rateLimit } from "@/lib/rate-limit";
 import { batchPhase, batchWindow, interviewExpiry, readStoredStages, validateRegistration } from "@/lib/batches";
-import { createStagedInterview, loadStagedInput, sendCandidateInvite } from "@/lib/staged-interview";
+import { createStagedInterview, loadStagedInput } from "@/lib/staged-interview";
 import { LIMITS, stagesDuration } from "@/lib/runbook";
 import { readResume } from "@/lib/resume-text";
 
@@ -60,7 +60,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ code: s
   }
 
   // The same email again means the same person coming back: let them into their own interview, never a second one.
-  const origin = req.headers.get("origin") || process.env.NEXT_PUBLIC_APP_URL || "";
   const back = (r: { id: string; token: string; candidate_name: string | null }) =>
     NextResponse.json({ ok: true, existing: true, id: r.id, url: `/interview/${r.id}?token=${r.token}`, name: r.candidate_name || reg.value.name });
   const dup = await pool.query("SELECT id, token, candidate_name FROM interviews WHERE batch_id = $1 AND lower(candidate_email) = lower($2)", [batch.id, reg.value.email]);
@@ -93,7 +92,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ code: s
       batchId: batch.id,
       expiresAt: interviewExpiry({ startsAt: batch.starts_at, lateEntryMin: batch.late_entry_min }, duration),
     });
-    sendCandidateInvite({ origin, url: made.url, candidateEmail: reg.value.email, candidateName: reg.value.name, role: batch.role, level: batch.level, duration, orgName: batch.org_name }).catch(console.error);
+    // No email: the candidate is on the page that just registered them and goes straight to their lobby.
     return NextResponse.json({ ok: true, id: made.id, url: made.url, name: reg.value.name }, { status: 201 });
   } catch (err: any) {
     if (err?.code === "23505") {

@@ -157,7 +157,7 @@ export async function prepareDsaTurn(interview: Interview, input: DsaTurnInput):
   // Hidden answer check (only when the candidate really answered: not a silence nudge or a phase opening)
   const lastRow = history[history.length - 1];
   if (phase && !ephemeral && input.trigger !== "phase_open" && lastRow && lastRow.role === "candidate" && history.length >= 2) {
-    messages = withDirective(messages, await judgeLastAnswer(interview.id, messages));
+    messages = withDirective(messages, await judgeLastAnswer(interview.id, messages, !!unlockedHint));
   }
 
   const last = history[history.length - 1];
@@ -173,14 +173,14 @@ export async function prepareDsaTurn(interview: Interview, input: DsaTurnInput):
 }
 
 /** Returns a private directive for the interviewer's next reply, or null. Never throws, never blocks long. */
-async function judgeLastAnswer(interviewId: string, messages: { role: string; content: string }[]): Promise<string | null> {
+async function judgeLastAnswer(interviewId: string, messages: { role: string; content: string }[], hintUnlocked: boolean): Promise<string | null> {
   if (process.env.JUDGE_AI_ENABLED === "false") return null;
   const started = Date.now();
   try {
     const raw = await callJudgeAI([...messages, { role: "user", content: JUDGE_INSTRUCTION }]);
     const verdict = parseJudgeVerdict(raw);
     console.log(`[Judge] ${interviewId} verdict=${verdict ? verdict.verdict : "unreadable"} in ${Date.now() - started}ms`);
-    return directiveFor(verdict);
+    return directiveFor(verdict, { hintUnlocked });
   } catch (e: any) {
     console.warn(`[Judge] skipped for ${interviewId} after ${Date.now() - started}ms: ${e?.message || e}`);
     return null;
