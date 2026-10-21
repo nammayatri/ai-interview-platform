@@ -12,7 +12,6 @@ import { ResizeHandle } from "./ResizeHandle";
 import { useDsaRoom, type PhaseTransitionFromServer } from "./dsa/useDsaRoom";
 import { ProblemPanel } from "./dsa/ProblemPanel";
 import { PuzzlePanel } from "./dsa/PuzzlePanel";
-import { Scratchpad } from "./dsa/Scratchpad";
 import { PhaseHeader } from "./dsa/PhaseHeader";
 
 interface TranscriptEntry {
@@ -183,7 +182,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   const [, setClockTick] = useState(0);
   const [startError, setStartError] = useState("");
   // Resizable panels (desktop): sizes in percent, remembered in this browser. Double-click a handle to reset.
-  const [layout, setLayout] = useState<{ left: number | null; problem: number; scratch: number }>({ left: null, problem: 68, scratch: 42 });
+  const [layout, setLayout] = useState<{ left: number | null; problem: number }>({ left: null, problem: 80 });
   const [isLg, setIsLg] = useState(false);
   const mainRef = useRef<HTMLDivElement>(null);
   const leftColRef = useRef<HTMLDivElement>(null);
@@ -194,15 +193,15 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     sync();
     mq.addEventListener("change", sync);
     try {
-      const saved = JSON.parse(localStorage.getItem("interview-layout-v1") || "null");
-      if (saved && typeof saved === "object") setLayout((l) => ({ left: typeof saved.left === "number" ? saved.left : l.left, problem: typeof saved.problem === "number" ? saved.problem : l.problem, scratch: typeof saved.scratch === "number" ? saved.scratch : l.scratch }));
+      const saved = JSON.parse(localStorage.getItem("interview-layout-v2") || "null");
+      if (saved && typeof saved === "object") setLayout((l) => ({ left: typeof saved.left === "number" ? saved.left : l.left, problem: typeof saved.problem === "number" ? saved.problem : l.problem }));
     } catch { /* no saved layout */ }
     return () => mq.removeEventListener("change", sync);
   }, []);
-  const changeLayout = (patch: Partial<{ left: number | null; problem: number; scratch: number }>) =>
+  const changeLayout = (patch: Partial<{ left: number | null; problem: number }>) =>
     setLayout((l) => {
       const next = { ...l, ...patch };
-      try { localStorage.setItem("interview-layout-v1", JSON.stringify(next)); } catch { /* ignore */ }
+      try { localStorage.setItem("interview-layout-v2", JSON.stringify(next)); } catch { /* ignore */ }
       return next;
     });
   const pctOf = (value: number, start: number, size: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, ((value - start) / size) * 100));
@@ -615,6 +614,9 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   const transcriptScrollRef = useRef<HTMLDivElement>(null);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
 
+  const stickToBottomRef = useRef(true);
+  const prevTranscriptLenRef = useRef(0);
+
   const handleTranscriptScroll = useCallback(() => {
     const el = transcriptScrollRef.current;
     if (!el) return;
@@ -622,8 +624,29 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     setShowScrollBottom(!atBottom);
   }, []);
 
+  // The reader's own scrolling decides whether new content should be followed.
+  const onTranscriptScroll = useCallback(() => {
+    const el = transcriptScrollRef.current;
+    if (el) stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    handleTranscriptScroll();
+  }, [handleTranscriptScroll]);
+
+  // Follow the conversation: a message the candidate just sent always shows the newest message, and new
+  // content follows the reader as long as they have not scrolled up to read something older.
+  useEffect(() => {
+    const el = transcriptScrollRef.current;
+    if (!el) return;
+    const grew = transcript.length > prevTranscriptLenRef.current;
+    prevTranscriptLenRef.current = transcript.length;
+    const justSent = grew && transcript[transcript.length - 1]?.role === "candidate";
+    if (justSent) stickToBottomRef.current = true;
+    if (stickToBottomRef.current) el.scrollTop = el.scrollHeight;
+  }, [transcript, interimTranscript, isAIThinking, currentAIText]);
+
   const scrollToBottom = useCallback(() => {
-    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    stickToBottomRef.current = true;
+    const el = transcriptScrollRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     setShowScrollBottom(false);
   }, []);
 
@@ -961,6 +984,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     silenceDelayMs: runtimeConfig.silenceDelayMs,
     audioFormat: runtimeConfig.sttAudio,
     manualMode: manualVoice,
+    muted: !micEnabled,
     onPauseRequest: () => { pauseUntilRef.current = Date.now() + PAUSE_GRACE_MS; },
     onInterim: (text) => {
       setInterimTranscript(text);
@@ -1006,12 +1030,12 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     const onKey = (e: KeyboardEvent) => {
       if (!isTalkShortcut(e)) return;
       e.preventDefault();
-      if (isAIThinking) return;
+      if (isAIThinking || !micEnabled) return;
       toggleTalk();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [manualVoice, isStarted, isAIThinking, toggleTalk]);
+  }, [manualVoice, isStarted, isAIThinking, micEnabled, toggleTalk]);
 
   const handleStartInterview = useCallback(async () => {
     // Request fullscreen
@@ -1116,6 +1140,15 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     // Redirect to completion page (not scorecard — that's for interviewers only)
     window.location.href = `/completed/${interviewId}?token=${tokenRef.current}`;
   }, [interviewId]);
+
+  // A brief wobble of the voice connection is not worth a pop-up; only a problem that lasts is shown.
+  const voiceTrouble = isStarted && micEnabled && stt.everConnected && (stt.status === "reconnecting" || stt.status === "failed");
+  const [showVoiceWarn, setShowVoiceWarn] = useState(false);
+  useEffect(() => {
+    if (!voiceTrouble) { setShowVoiceWarn(false); return; }
+    const t = setTimeout(() => setShowVoiceWarn(true), 6000);
+    return () => clearTimeout(t);
+  }, [voiceTrouble]);
 
   const toggleMic = useCallback(() => {
     const stream = mediaStreamRef.current;
@@ -1250,18 +1283,12 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   useEffect(() => {
     if (!needsFullscreenClick || fullscreenCountdown <= 0) return;
     const timer = setInterval(() => {
-      setFullscreenCountdown((prev) => {
-        if (prev <= 1) {
-          // Time's up — end interview
-          setNeedsFullscreenClick(false);
-          handleEndInterview();
-          return 0;
-        }
-        return prev - 1;
-      });
+      // Moving or clicking the browser's screen-share bar can drop fullscreen. That is recorded as a violation, but it
+      // never ends the interview: the prompt stays until the candidate returns to fullscreen.
+      setFullscreenCountdown((prev) => Math.max(0, prev - 1));
     }, 1000);
     return () => clearInterval(timer);
-  }, [needsFullscreenClick, fullscreenCountdown, handleEndInterview]);
+  }, [needsFullscreenClick, fullscreenCountdown]);
 
   // Strike decay — reduce accumulated warnings by 0.5 every 5 minutes
   // This prevents early false positives from permanently harming the candidate
@@ -1369,11 +1396,9 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
           <p className="mt-3 text-sm text-zinc-400">
             This interview must be conducted in fullscreen mode.
           </p>
-          {fullscreenCountdown > 0 && (
-            <p className="mt-2 text-lg font-bold text-red-400">
-              Interview will end in {fullscreenCountdown}s
-            </p>
-          )}
+          <p className="mt-2 text-sm text-amber-300">
+            Please return to fullscreen to continue. The interview timer keeps running.
+          </p>
           <button
             onClick={async () => {
               try {
@@ -1474,7 +1499,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
                   <span className="text-green-400">&#10003;</span>
                   <span>
                     This is a coding evaluation in stages: a discussion of your own solution, a coding problem and a puzzle (the interviewer chose which apply).
-                    You can see the problem on screen but cannot run code. Use the scratchpad to type notes, pseudocode or code; it is typed only.
+                    You can see the problem on screen but cannot run code. Explain your thinking by voice, or type notes, pseudocode or code in the chat box; it is typed only.
                   </span>
                 </li>
               )}
@@ -1667,7 +1692,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         <div className="flex items-center gap-3">
           {/* STT Status + Retry */}
           <div className="flex items-center gap-2">
-            <span className={`inline-flex h-2 w-2 rounded-full ${stt.status === "live" ? "bg-green-500" : stt.status === "failed" ? "bg-red-500 animate-pulse" : "bg-yellow-500 animate-pulse"}`} title={stt.status === "live" ? "Microphone transcription is working" : "Voice connection is being restored"} />
+            <span className={`inline-flex h-2 w-2 rounded-full ${!micEnabled ? "bg-zinc-500" : stt.status === "live" ? "bg-green-500" : stt.status === "failed" ? "bg-red-500" : "bg-yellow-500"}`} title={!micEnabled ? "Microphone is muted" : stt.status === "live" ? "Microphone transcription is working" : "Voice connection is being restored"} />
             <button
               onClick={() => {
                 if (activeAbortRef.current) { activeAbortRef.current.abort(); activeAbortRef.current = null; }
@@ -1684,7 +1709,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
                 }
                 setCurrentAIText("");
                 stt.stop();
-                setTimeout(() => stt.start(), 500);
+                setTimeout(() => stt.start(), 500); // start() does nothing while the mic is muted
               }}
               className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-zinc-400 hover:text-white hover:bg-zinc-700/50 transition-all"
               title="Click if interviewer is not responding or microphone seems stuck"
@@ -1740,11 +1765,11 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
           )}
           {isDsa && (
             <ResizeHandle direction="row" label="Resize the problem and camera panels"
-              onDrag={(_x, y) => { const r = leftColRef.current?.getBoundingClientRect(); if (r) changeLayout({ problem: pctOf(y, r.top, r.height, 20, 85) }); }}
-              onReset={() => changeLayout({ problem: 68 })} />
+              onDrag={(_x, y) => { const r = leftColRef.current?.getBoundingClientRect(); if (r) changeLayout({ problem: pctOf(y, r.top, r.height, 20, 90) }); }}
+              onReset={() => changeLayout({ problem: 80 })} />
           )}
           {/* Video Feed */}
-          <div className={`relative ${isDsa ? "flex-[1] min-h-[130px]" : "flex-[3] min-h-[150px] sm:min-h-[200px]"} lg:min-h-[90px] overflow-hidden rounded-xl sm:rounded-2xl border border-white/5 bg-zinc-900`} style={isLg ? { flex: "1 1 0" } : undefined}>
+          <div className={`relative ${isDsa ? "flex-[1] min-h-[110px]" : "flex-[3] min-h-[150px] sm:min-h-[200px]"} lg:min-h-[90px] overflow-hidden rounded-xl sm:rounded-2xl border border-white/5 bg-zinc-900`} style={isLg ? { flex: "1 1 0" } : undefined}>
             <video
               ref={videoCallbackRef}
               autoPlay
@@ -1839,18 +1864,8 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         <ResizeHandle direction="col" label="Resize the left and right panels"
           onDrag={(x) => { const r = mainRef.current?.getBoundingClientRect(); if (r) changeLayout({ left: pctOf(x, r.left, r.width, 25, 75) }); }}
           onReset={() => changeLayout({ left: null })} />
-        {/* Right: (DSA Review: scratchpad) + Live Transcript + Screen Share */}
+        {/* Right: Live Transcript / chat + Screen Share */}
         <div ref={rightColRef} className={`flex ${isDsa ? "flex-[9]" : "flex-[3]"} flex-col gap-3 lg:gap-0 min-h-0`} style={isLg ? { flex: "1 1 0", minWidth: 0 } : undefined}>
-          {isDsa && (
-            <div className="flex min-h-[160px] flex-[2] lg:min-h-0" style={isLg ? { flex: `0 0 ${layout.scratch}%` } : undefined}>
-              <Scratchpad interviewId={interviewId} token={tokenRef.current} value={dsa.scratchpad} onChange={dsa.setScratchpad} placeholder={dsa.active?.phaseKey === "dsa" ? "Write your approach and code here. It is typed only and is not executed." : undefined} />
-            </div>
-          )}
-          {isDsa && (
-            <ResizeHandle direction="row" label="Resize the scratchpad and transcript panels"
-              onDrag={(_x, y) => { const r = rightColRef.current?.getBoundingClientRect(); if (r) changeLayout({ scratch: pctOf(y, r.top, r.height, 15, 80) }); }}
-              onReset={() => changeLayout({ scratch: 42 })} />
-          )}
           {/* Screen Share Status */}
           {screenSharing && (
             <div className="glass rounded-2xl px-3 py-2 hidden lg:flex items-center gap-2 lg:my-2">
@@ -1861,8 +1876,8 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
               <span className="text-xs text-green-400">Screen sharing active</span>
             </div>
           )}
-          <div className={`glass ${isDsa ? "flex-[3] min-h-[220px] lg:min-h-0" : "flex-1"} flex flex-col rounded-2xl min-h-0 relative`} style={isLg ? { flex: "1 1 0" } : undefined}>
-            <div className="flex-1 overflow-y-auto p-4 relative" ref={transcriptScrollRef} onScroll={handleTranscriptScroll}>
+          <div className={`glass ${isDsa ? "min-h-[360px] flex-1 lg:min-h-0" : "flex-1"} flex flex-col rounded-2xl min-h-0 relative`} style={isLg ? { flex: "1 1 0" } : undefined}>
+            <div className="flex-1 overflow-y-auto p-4 relative" ref={transcriptScrollRef} onScroll={onTranscriptScroll}>
             <h3 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5">
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
@@ -1968,8 +1983,8 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
             {/* Chat input — type messages alongside voice */}
             <div className="border-t border-white/5 p-3">
               <div className="flex items-center gap-2">
-                <input
-                  type="text"
+                <textarea
+                  rows={2}
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
                   onKeyDown={(e) => {
@@ -1978,9 +1993,9 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
                       sendChatMessage();
                     }
                   }}
-                  placeholder={isAISpeaking ? "AI is speaking..." : isAIThinking ? "AI is thinking..." : "Type a message or use voice..."}
+                  placeholder={isAISpeaking ? "AI is speaking..." : isAIThinking ? "AI is thinking..." : "Type a message or code (Shift+Enter for a new line)..."}
                   disabled={isAIThinking}
-                  className="flex-1 rounded-lg bg-zinc-800/60 border border-white/5 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-blue-500/50 focus:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="max-h-40 flex-1 resize-none rounded-lg bg-zinc-800/60 border border-white/5 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-blue-500/50 focus:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
                 <button
                   onClick={sendChatMessage}
@@ -1999,8 +2014,9 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       </div>
 
       {/* Voice connection problem: say so, keep typing available, offer a retry */}
-      {isStarted && stt.everConnected && (stt.status === "reconnecting" || stt.status === "failed") && (
-        <div className={`mx-auto mb-1 flex max-w-3xl items-center justify-center gap-3 rounded-lg border px-3 py-2 text-xs ${stt.status === "failed" ? "border-red-500/30 bg-red-500/10 text-red-300" : "border-amber-500/30 bg-amber-500/10 text-amber-300"}`}>
+      {/* Fixed, so showing or hiding it never moves the rest of the page */}
+      {showVoiceWarn && voiceTrouble && (
+        <div className={`fixed bottom-20 left-1/2 z-40 flex w-[min(48rem,calc(100vw-2rem))] -translate-x-1/2 items-center justify-center gap-3 rounded-lg border px-3 py-2 text-xs backdrop-blur ${stt.status === "failed" ? "border-red-500/30 bg-red-950/80 text-red-300" : "border-amber-500/30 bg-amber-950/80 text-amber-300"}`}>
           <span>
             {stt.status === "failed"
               ? "We can't hear you right now. Please type your answer in the box above while we reconnect your microphone."
@@ -2018,8 +2034,8 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
           <button
             type="button"
             onClick={() => stt.toggleTalk()}
-            disabled={isAIThinking || stt.talkState === "sending"}
-            title={stt.talkState === "listening" ? "Stop and send what you said (Ctrl+M)" : "Start speaking (Ctrl+M)"}
+            disabled={isAIThinking || stt.talkState === "sending" || !micEnabled}
+            title={!micEnabled ? "Unmute your microphone to speak" : stt.talkState === "listening" ? "Stop and send what you said (Ctrl+M)" : "Start speaking (Ctrl+M)"}
             className={`flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold text-white transition-all disabled:opacity-50 ${
               stt.talkState === "listening"
                 ? "animate-pulse bg-red-600 hover:bg-red-500"

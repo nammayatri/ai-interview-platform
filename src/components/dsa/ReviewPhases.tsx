@@ -168,6 +168,7 @@ export function ReviewPhases({ phases, dimensionSources, interviewPhases, submis
       {(() => {
         const withPads = (interviewPhases || []).filter((p) => p.scratchpad && p.scratchpad.trim());
         const pads = withPads.length ? withPads.map((p) => ({ key: p.phaseKey, text: p.scratchpad as string })) : scratchpad && scratchpad.trim() ? [{ key: "", text: scratchpad }] : [];
+        if (pads.length === 0) return null; // the room has no scratchpad any more; show it only for older interviews
         return (
           <div className="card p-6 space-y-3 animate-fade-in-up delay-3">
             <h2 className="text-sm font-medium text-gray-500 uppercase tracking-wider">Scratchpad</h2>

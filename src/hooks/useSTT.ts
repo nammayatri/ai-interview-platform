@@ -19,6 +19,7 @@ interface UseSTTOptions {
   silenceDelayMs?: number;
   audioFormat?: "webm" | "pcm16"; // webm (MediaRecorder) for Deepgram/Soniox, pcm16 (16 kHz raw) for Voxtral
   manualMode?: boolean; // candidate taps "Done" instead of auto-send after silence
+  muted?: boolean; // microphone muted: stop listening and transcribing at once, resume when unmuted
   onPauseRequest?: () => void; // candidate asked for a moment ("give me a minute")
   onInterim: (text: string) => void;
   onComplete: (text: string) => void;
@@ -39,7 +40,7 @@ interface UseSTTReturn {
 }
 
 export function useSTT(options: UseSTTOptions): UseSTTReturn {
-  const { providers, interviewId, token, isAISpeaking, isStarted, isEnding, mediaStream, silenceDelayMs = 6000, audioFormat = "webm", manualMode = false, onPauseRequest, onInterim, onComplete, onInterrupt } = options;
+  const { providers, interviewId, token, isAISpeaking, isStarted, isEnding, mediaStream, silenceDelayMs = 6000, audioFormat = "webm", manualMode = false, muted = false, onPauseRequest, onInterim, onComplete, onInterrupt } = options;
   const onInterruptRef = useRef(onInterrupt);
   onInterruptRef.current = onInterrupt;
   const audioFormatRef = useRef(audioFormat);
@@ -47,6 +48,8 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
   const pcmRef = useRef<PcmCapture | null>(null);
   const manualModeRef = useRef(manualMode);
   manualModeRef.current = manualMode;
+  const mutedRef = useRef(muted);
+  mutedRef.current = muted;
   const silenceDelayRef = useRef(silenceDelayMs);
   silenceDelayRef.current = silenceDelayMs;
   const onPauseRef = useRef(onPauseRequest);
@@ -131,7 +134,7 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
   }
   const talk = talkRef.current;
   const toggleTalk = useCallback(() => {
-    if (!manualModeRef.current || stoppedRef.current || isEnding.current) return;
+    if (!manualModeRef.current || stoppedRef.current || isEnding.current || mutedRef.current) return;
     talk.toggle();
   }, [talk, isEnding]);
 
@@ -230,6 +233,9 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
         let data: any;
         try { data = JSON.parse(raw); } catch { return; }
 
+        // Muted: nothing that arrives is transcribed, shown or sent
+        if (mutedRef.current || stoppedRef.current) return;
+
         // Manual mode: only listen between pressing start and stop
         if (manualModeRef.current && !talk.isAccepting()) return;
 
@@ -280,6 +286,8 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
       dgSocket.onerror = () => console.error("[STT:deepgram] WebSocket error");
 
       dgSocket.onclose = (e) => {
+        // A socket that was replaced or closed on purpose (mute, restart) must not touch the new one's state or retry
+        if (dgSocketRef.current !== dgSocket) return;
         const connectionDuration = Date.now() - connectTime;
         console.log(`[STT] WebSocket disconnected code=${e.code} after ${Math.round(connectionDuration / 1000)}s`);
         setConnected(false);
@@ -319,7 +327,7 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
       };
 
       recognition.onresult = (event: any) => {
-        if (isAISpeaking.current) return;
+        if (isAISpeaking.current || mutedRef.current) return;
         if (manualModeRef.current && !talk.isAccepting()) return; // manual mode: only while listening
         const result = event.results[event.results.length - 1];
         const text = result[0].transcript;
@@ -404,6 +412,7 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
   // ─── Public API ───────────────────────────────────────────────────────
 
   const start = useCallback(() => {
+    if (mutedRef.current) return; // unmuting starts listening again
     stoppedRef.current = false;
     reconnectCountRef.current = 0; // #5: only reset here, not in onopen
     reconnectingRef.current = false;
@@ -421,12 +430,13 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
     clearBuffer(); // #1, #2: clear buffer + cancel silence timer
 
     // Deepgram cleanup
-    if (dgSocketRef.current?.readyState === WebSocket.OPEN) {
-      try { dgSocketRef.current.send(JSON.stringify({ type: "CloseStream" })); } catch {}
-      setTimeout(() => { try { dgSocketRef.current?.close(); } catch {} dgSocketRef.current = null; }, 500);
+    const oldSocket = dgSocketRef.current;
+    dgSocketRef.current = null; // a later start() may already own a new socket by the time this one closes
+    if (oldSocket?.readyState === WebSocket.OPEN) {
+      try { oldSocket.send(JSON.stringify({ type: "CloseStream" })); } catch {}
+      setTimeout(() => { try { oldSocket.close(); } catch {} }, 500);
     } else {
-      try { dgSocketRef.current?.close(); } catch {}
-      dgSocketRef.current = null;
+      try { oldSocket?.close(); } catch {}
     }
     if (keepAliveRef.current) { clearInterval(keepAliveRef.current); keepAliveRef.current = null; }
     if (mediaRecorderRef.current?.state !== "inactive") { try { mediaRecorderRef.current?.stop(); } catch {} }
@@ -442,6 +452,27 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
     setConnected(false);
     setActiveProvider(null);
   }, [clearBuffer]);
+
+  // ─── Mute: stop listening immediately, resume on unmute ──────────────────
+  // Closing the socket and recorder (not just silencing the track) means nothing is captured, buffered or sent while muted.
+  const wasMutedRef = useRef(false);
+  const startFnRef = useRef(start);
+  const stopFnRef = useRef(stop);
+  startFnRef.current = start;
+  stopFnRef.current = stop;
+  useEffect(() => {
+    if (muted) {
+      wasMutedRef.current = true;
+      if (isStarted) {
+        stopFnRef.current();
+        talk.reset();
+        onInterimRef.current("");
+      }
+    } else if (wasMutedRef.current) {
+      wasMutedRef.current = false;
+      if (isStarted && !isEnding.current) startFnRef.current();
+    }
+  }, [muted, isStarted, talk, isEnding]);
 
   // ─── Health Monitor ─────────────────────────────────────────────────────
 

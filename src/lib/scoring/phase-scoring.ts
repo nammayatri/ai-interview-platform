@@ -75,7 +75,7 @@ function buildPhasePrompt(interview: Interview, phase: PhaseRow, qa: string): st
     reference = `REFERENCE SOLUTION TRACKS (the last is the best):\n${trackList(cfg.runbook.solutionTracks)}`;
   } else if (phase.phaseKey === "dsa") {
     const sel = (phase.config as import("../runbook").DsaPhaseConfig).selected;
-    intro = `PHASE: a DSA problem solved live, "${m.title}". The candidate gave their approach by voice and wrote code (not executed) in the scratchpad.${scratch}`;
+    intro = `PHASE: a DSA problem solved live, "${m.title}". The candidate gave their approach by voice and wrote code (not executed) in the chat or the scratchpad.${scratch}`;
     reference = `REFERENCE SOLUTION TRACKS (the last is the best):\n${sel ? trackList(sel.runbook.solutionTracks) : "(none)"}`;
   } else {
     const cfg = phase.config as PuzzlePhaseConfig;

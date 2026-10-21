@@ -275,7 +275,9 @@ export default function ReviewPage() {
     );
   }
 
-  const { scorecard, proctoring, transcript } = data;
+  const { scorecard } = data;
+  const proctoring = data.proctoring ?? [];
+  const transcript = data.transcript ?? [];
 
   return (
     <DashboardLayout>

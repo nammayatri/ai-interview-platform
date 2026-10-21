@@ -28,6 +28,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
         status: interview.status,
         scorecard: interview.scorecard,
         transcript: interview.transcript,
+        // Events carry type, severity and message only; photos are never included in a shared view.
+        proctoring: (interview.proctoring ?? []).map((e) => ({ type: e.type, severity: e.severity, message: e.message, timestamp: e.timestamp })),
         // PII stripped: no email, name, phone, resume, token, proctoring photos
       });
     }

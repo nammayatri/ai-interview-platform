@@ -128,6 +128,7 @@ export default function Proctoring({ videoRef, interviewId, enabled, onAlert, to
     const MIN_AWAY_MS = 1500; // shorter than this is an OS notification or a click on the screen-share bar
     let awayStart = 0;
     let coverTimer: ReturnType<typeof setTimeout> | null = null;
+    let showTimer: ReturnType<typeof setTimeout> | null = null;
     const cover = document.createElement("div");
     cover.style.cssText = "position:fixed;inset:0;background:#0b0b10;z-index:2147483646;display:none;align-items:center;justify-content:center;flex-direction:column;gap:8px;color:#fff;font:15px sans-serif;text-align:center;padding:24px";
     document.body.appendChild(cover);
@@ -136,10 +137,13 @@ export default function Proctoring({ videoRef, interviewId, enabled, onAlert, to
     const leave = () => {
       if (awayStart) return;
       awayStart = Date.now();
-      show("<div style='font-size:18px;font-weight:600'>Return to the interview</div><div style='opacity:.8'>Leaving this screen is recorded and reported to the reviewer.</div>");
+      // Cover the page only once the absence is real. Dragging the browser's screen-share bar or a passing OS
+      // notification takes focus for a moment and must not flash a black screen.
+      showTimer = setTimeout(() => show("<div style='font-size:18px;font-weight:600'>Return to the interview</div><div style='opacity:.8'>Leaving this screen is recorded and reported to the reviewer.</div>"), MIN_AWAY_MS);
     };
     const back = () => {
       if (!awayStart) return;
+      if (showTimer) { clearTimeout(showTimer); showTimer = null; }
       const ms = Date.now() - awayStart;
       awayStart = 0;
       if (ms >= MIN_AWAY_MS) {
@@ -168,6 +172,7 @@ export default function Proctoring({ videoRef, interviewId, enabled, onAlert, to
       document.removeEventListener("visibilitychange", onVisibility);
       clearInterval(poll);
       if (coverTimer) clearTimeout(coverTimer);
+      if (showTimer) clearTimeout(showTimer);
       cover.remove();
     };
   }, [enabled, alert]);

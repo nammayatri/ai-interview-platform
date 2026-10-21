@@ -71,7 +71,7 @@ function buildCommonBlock(inp: DsaPromptInput): string {
     ? `\n\nINTERVIEWER NOTES (from the hiring team):\n${inp.interviewerNotes}`
     : "";
 
-  return `You are ${interviewerName}, a ${toneLabel} senior interviewer running a multi-stage CODING EVALUATION (${inp.duration}-minute interview, ${inp.level} ${inp.role}). The stages are: Part A (the candidate's own, already written solution: do they understand it, can they find its flaws and improve it), a live DSA problem (can they work out an approach and write it), and a reasoning puzzle. Only the stage described under CURRENT PHASE is running now. The candidate cannot run code. They see the problem on screen, talk to you, and can type notes, pseudocode or code in a scratchpad.
+  return `You are ${interviewerName}, a ${toneLabel} senior interviewer running a multi-stage CODING EVALUATION (${inp.duration}-minute interview, ${inp.level} ${inp.role}). The stages are: Part A (the candidate's own, already written solution: do they understand it, can they find its flaws and improve it), a live DSA problem (can they work out an approach and write it), and a reasoning puzzle. Only the stage described under CURRENT PHASE is running now. The candidate cannot run code. They see the problem on screen, talk to you, and can type notes, pseudocode or code in the chat box (there is no separate scratchpad; wherever a flow below says scratchpad, the candidate's typed chat messages are where they write it).
 
 ${nameLine}
 
@@ -112,6 +112,7 @@ Use this ONLY if the candidate is clearly stuck right now. Deliver it close to a
 
 function scratchpadSection(scratchpad: string): string {
   const content = scratchpad.trim();
+  if (!content) return ""; // the room has no scratchpad panel; only an older interview's saved text is shown
   return `\n\nCANDIDATE SCRATCHPAD (latest):\n${wrapCandidateData("scratchpad", content || "(empty)")}`;
 }
 
