@@ -204,6 +204,26 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       try { localStorage.setItem("interview-layout-v2", JSON.stringify(next)); } catch { /* ignore */ }
       return next;
     });
+  // Camera as a floating picture-in-picture tile on desktop coding rounds: drag it anywhere, resize from its corner.
+  const [pipPos, setPipPos] = useState<{ x: number; y: number } | null>(null);
+  const pipRef = useRef<HTMLDivElement>(null);
+  const startPipDrag = (e: React.PointerEvent) => {
+    const tile = pipRef.current, col = leftColRef.current;
+    if (!tile || !col) return;
+    const tr = tile.getBoundingClientRect();
+    if (e.clientX > tr.right - 20 && e.clientY > tr.bottom - 20) return; // the resize grip
+    const cr = col.getBoundingClientRect();
+    const dx = e.clientX - tr.left, dy = e.clientY - tr.top;
+    const move = (ev: PointerEvent) => {
+      const x = Math.max(0, Math.min(cr.width - tile.offsetWidth, ev.clientX - dx - cr.left));
+      const y = Math.max(0, Math.min(cr.height - tile.offsetHeight, ev.clientY - dy - cr.top));
+      setPipPos({ x, y });
+    };
+    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    e.preventDefault();
+  };
   const pctOf = (value: number, start: number, size: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, ((value - start) / size) * 100));
   const [needsFullscreenClick, setNeedsFullscreenClick] = useState(false);
   const [fullscreenCountdown, setFullscreenCountdown] = useState(0);
@@ -1183,6 +1203,39 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     }
   }, [interviewId]);
 
+  // Asks the browser to share the entire screen. Used by the lobby button and by the prompt shown if sharing stops mid-interview.
+  const isStartedRef = useRef(false);
+  isStartedRef.current = isStarted;
+  const requestScreenShare = useCallback(async () => {
+    try {
+      (window as any).__sharePickerOpen = true; // the browser's picker takes focus; that is not leaving the screen
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { displaySurface: "monitor" } as any,
+        audio: false,
+      });
+      // Only the entire screen is accepted — a tab or window would hide other apps.
+      const surface = (screenStream.getVideoTracks()[0].getSettings() as any).displaySurface;
+      if (surface && surface !== "monitor") {
+        screenStream.getTracks().forEach((t) => t.stop());
+        setScreenShareError("You shared a tab or window. Please choose “Entire Screen”.");
+        return;
+      }
+      setScreenShareError("");
+      // Detect when the candidate stops sharing (isStartedRef, because this closure outlives the lobby render)
+      screenStream.getVideoTracks()[0].onended = () => {
+        setScreenSharing(false);
+        if (isStartedRef.current) {
+          onProctoringEventRef.current({ type: "screen_share_stopped", severity: "flag", message: "Candidate stopped screen sharing" });
+        }
+      };
+      setScreenSharing(true);
+    } catch (err) {
+      console.error("Screen share denied:", err);
+    } finally {
+      setTimeout(() => { (window as any).__sharePickerOpen = false; }, 1500);
+    }
+  }, []);
+
   // Proctoring callback — handles alerts from Proctoring.tsx and local events (e.g. screen_share_stopped)
   const onProctoringEvent = useCallback(
     (event: { type: string; message: string; severity?: string }) => {
@@ -1242,6 +1295,22 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     },
     [interviewId, runtimeConfig.maxProctoringStrikes]
   );
+
+  const onProctoringEventRef = useRef(onProctoringEvent);
+  onProctoringEventRef.current = onProctoringEvent;
+
+  // Sharing stopped mid-interview: ask for it again, and end the interview if it is not restored in time.
+  const SHARE_GRACE_S = 30;
+  const [shareCountdown, setShareCountdown] = useState(SHARE_GRACE_S);
+  const shareLost = isStarted && !screenSharing && !isMobile && !isEnding && !showProctoringBan;
+  useEffect(() => {
+    if (!shareLost) { setShareCountdown(SHARE_GRACE_S); return; }
+    const t = setInterval(() => setShareCountdown((n) => Math.max(0, n - 1)), 1000);
+    return () => clearInterval(t);
+  }, [shareLost]);
+  useEffect(() => {
+    if (shareLost && shareCountdown <= 0) handleEndInterview();
+  }, [shareLost, shareCountdown, handleEndInterview]);
 
   // Auto-end interview after max proctoring violations — give 10 seconds to read the message
   useEffect(() => {
@@ -1610,32 +1679,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
             <div className="pt-2 border-t border-white/10">
               <button
                 type="button"
-                onClick={async () => {
-                  try {
-                    const screenStream = await navigator.mediaDevices.getDisplayMedia({
-                      video: { displaySurface: "monitor" } as any,
-                      audio: false,
-                    });
-                    // Only the entire screen is accepted — a tab or window would hide other apps.
-                    const surface = (screenStream.getVideoTracks()[0].getSettings() as any).displaySurface;
-                    if (surface && surface !== "monitor") {
-                      screenStream.getTracks().forEach((t) => t.stop());
-                      setScreenShareError("You shared a tab or window. Please choose “Entire Screen”.");
-                      return;
-                    }
-                    setScreenShareError("");
-                    // Detect when user stops sharing
-                    screenStream.getVideoTracks()[0].onended = () => {
-                      setScreenSharing(false);
-                      if (isStarted) {
-                        onProctoringEvent({ type: "screen_share_stopped", severity: "flag", message: "Candidate stopped screen sharing" });
-                      }
-                    };
-                    setScreenSharing(true);
-                  } catch (err) {
-                    console.error("Screen share denied:", err);
-                  }
-                }}
+                onClick={requestScreenShare}
                 className="w-full rounded-lg bg-blue-500/20 border border-blue-500/30 px-4 py-2.5 text-sm font-medium text-blue-300 hover:bg-blue-500/30 transition-all flex items-center justify-center gap-2"
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1672,6 +1716,18 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   // ─── Main Interview Screen ────────────────────────────────────────────────
   return (
     <div className="flex h-screen flex-col">
+      {/* Screen sharing stopped: it must be restored or the interview ends */}
+      {shareLost && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/85 px-4">
+          <div className="glass w-full max-w-md rounded-2xl p-8 text-center">
+            <h2 className="text-xl font-semibold text-white">Screen sharing stopped</h2>
+            <p className="mt-3 text-sm text-zinc-300">Sharing your entire screen is required for this interview. Share it again to continue.</p>
+            <p className="mt-3 text-lg font-bold text-red-400">The interview will end in {shareCountdown}s</p>
+            <button onClick={requestScreenShare} className="mt-5 rounded-lg bg-blue-600 px-8 py-3 text-sm font-medium text-white hover:bg-blue-500">Share Your Entire Screen</button>
+            {screenShareError && <p className="mt-3 text-xs text-red-400">{screenShareError}</p>}
+          </div>
+        </div>
+      )}
       {/* Muted mic warning */}
       {!micEnabled && isStarted && (
         <div className="absolute top-20 left-1/2 -translate-x-1/2 z-50 bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium animate-pulse">
@@ -1743,9 +1799,9 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       {/* Main Content */}
       <div ref={mainRef} className={`flex flex-col lg:flex-row flex-1 gap-2 sm:gap-3 lg:gap-0 p-2 sm:p-3 ${isDsa ? "overflow-y-auto lg:overflow-hidden" : "overflow-hidden"}`}>
         {/* Left: (DSA Review: problem / puzzle panel) + Video + AI Avatar */}
-        <div ref={leftColRef} className={`flex ${isDsa ? "flex-[11] min-h-0" : "flex-[5]"} flex-col gap-2 sm:gap-3 lg:gap-0`} style={isLg ? { flex: `0 0 ${layout.left ?? (isDsa ? 55 : 62)}%`, minWidth: 0 } : undefined}>
+        <div ref={leftColRef} className={`relative flex ${isDsa ? "flex-[11] min-h-0" : "flex-[5]"} flex-col gap-2 sm:gap-3 lg:gap-0`} style={isLg ? { flex: `0 0 ${layout.left ?? (isDsa ? 55 : 62)}%`, minWidth: 0 } : undefined}>
           {isDsa && (
-            <div className="flex min-h-[320px] flex-[3] lg:min-h-0" style={isLg ? { flex: `0 0 ${layout.problem}%` } : undefined}>
+            <div className="flex min-h-[320px] flex-[3] lg:min-h-0" style={isLg ? { flex: "1 1 0" } : undefined}>
               {dsa.active?.phaseKey === "puzzle" && dsa.active.selected ? (
                 <PuzzlePanel title={dsa.active.selected.title} statementMd={dsa.active.selected.runbook.statementMd} />
               ) : dsa.active?.phaseKey === "dsa" && dsa.active.selected ? (
@@ -1763,13 +1819,17 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
               )}
             </div>
           )}
-          {isDsa && (
-            <ResizeHandle direction="row" label="Resize the problem and camera panels"
-              onDrag={(_x, y) => { const r = leftColRef.current?.getBoundingClientRect(); if (r) changeLayout({ problem: pctOf(y, r.top, r.height, 20, 90) }); }}
-              onReset={() => changeLayout({ problem: 80 })} />
-          )}
           {/* Video Feed */}
-          <div className={`relative ${isDsa ? "flex-[1] min-h-[110px]" : "flex-[3] min-h-[150px] sm:min-h-[200px]"} lg:min-h-[90px] overflow-hidden rounded-xl sm:rounded-2xl border border-white/5 bg-zinc-900`} style={isLg ? { flex: "1 1 0" } : undefined}>
+          <div
+            ref={pipRef}
+            onPointerDown={isDsa && isLg ? startPipDrag : undefined}
+            className={isDsa && isLg
+              ? "absolute z-30 cursor-move overflow-hidden rounded-xl border border-white/15 bg-zinc-900 shadow-2xl shadow-black/50 [resize:both]"
+              : `relative ${isDsa ? "flex-[1] min-h-[110px]" : "flex-[3] min-h-[150px] sm:min-h-[200px]"} lg:min-h-[90px] overflow-hidden rounded-xl sm:rounded-2xl border border-white/5 bg-zinc-900`}
+            style={isDsa && isLg
+              ? { width: 300, height: 200, minWidth: 180, minHeight: 120, maxWidth: "70%", maxHeight: "70%", ...(pipPos ? { left: pipPos.x, top: pipPos.y } : { right: 12, bottom: 12 }) }
+              : isLg ? { flex: "1 1 0" } : undefined}
+          >
             <video
               ref={videoCallbackRef}
               autoPlay
@@ -1849,16 +1909,6 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
               </div>
             </div>
           </div>
-
-          {/* Current AI Subtitle — below video */}
-          {currentAIText && (
-            <div className="glass rounded-xl px-4 py-3 lg:mt-2">
-              <p className="text-sm leading-relaxed text-blue-300">
-                <span className="mr-2 text-xs font-semibold text-blue-500">ALEX:</span>
-                {currentAIText}
-              </p>
-            </div>
-          )}
         </div>
 
         <ResizeHandle direction="col" label="Resize the left and right panels"

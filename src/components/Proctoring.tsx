@@ -129,6 +129,13 @@ export default function Proctoring({ videoRef, interviewId, enabled, onAlert, to
     let awayStart = 0;
     let coverTimer: ReturnType<typeof setTimeout> | null = null;
     let showTimer: ReturnType<typeof setTimeout> | null = null;
+    // Clicking the browser's own controls (the screen-share bar, mic/camera indicators, the share picker) moves the pointer
+    // out of the page and takes focus. An app switch by keyboard does not. Such a short, pointer-led absence is not a departure.
+    const CHROME_GRACE_MS = 10000;
+    let pointerLeftAt = 0;
+    let viaPointer = false;
+    const onPointerLeave = () => { pointerLeftAt = Date.now(); };
+    document.documentElement.addEventListener("mouseleave", onPointerLeave);
     const cover = document.createElement("div");
     cover.style.cssText = "position:fixed;inset:0;background:#0b0b10;z-index:2147483646;display:none;align-items:center;justify-content:center;flex-direction:column;gap:8px;color:#fff;font:15px sans-serif;text-align:center;padding:24px";
     document.body.appendChild(cover);
@@ -137,16 +144,19 @@ export default function Proctoring({ videoRef, interviewId, enabled, onAlert, to
     const leave = () => {
       if (awayStart) return;
       awayStart = Date.now();
+      viaPointer = awayStart - pointerLeftAt < 1000 || !!(window as any).__sharePickerOpen;
       // Cover the page only once the absence is real. Dragging the browser's screen-share bar or a passing OS
       // notification takes focus for a moment and must not flash a black screen.
-      showTimer = setTimeout(() => show("<div style='font-size:18px;font-weight:600'>Return to the interview</div><div style='opacity:.8'>Leaving this screen is recorded and reported to the reviewer.</div>"), MIN_AWAY_MS);
+      showTimer = setTimeout(() => show("<div style='font-size:18px;font-weight:600'>Return to the interview</div><div style='opacity:.8'>Leaving this screen is recorded and reported to the reviewer.</div>"), viaPointer ? CHROME_GRACE_MS : MIN_AWAY_MS);
     };
     const back = () => {
       if (!awayStart) return;
       if (showTimer) { clearTimeout(showTimer); showTimer = null; }
       const ms = Date.now() - awayStart;
       awayStart = 0;
-      if (ms >= MIN_AWAY_MS) {
+      if (viaPointer && ms < CHROME_GRACE_MS) {
+        cover.style.display = "none";
+      } else if (ms >= MIN_AWAY_MS) {
         const secs = Math.max(1, Math.round(ms / 1000));
         alert("left_screen", "flag", `Left the interview screen for ${secs} s (switched tab or app). Reported as possible plagiarism.`);
         show("<div style='font-size:18px;font-weight:600;color:#fca5a5'>You left the interview screen</div><div style='opacity:.85'>This has been recorded and will be reported to the reviewer. Please stay on this screen.</div>");
@@ -159,7 +169,8 @@ export default function Proctoring({ videoRef, interviewId, enabled, onAlert, to
 
     const onBlur = () => leave();
     const onFocus = () => back();
-    const onVisibility = () => { if (document.hidden) leave(); else if (document.hasFocus()) back(); };
+    // A hidden page means another tab or a minimised window, never the browser's own controls
+    const onVisibility = () => { if (document.hidden) { leave(); viaPointer = false; } else if (document.hasFocus()) back(); };
     window.addEventListener("blur", onBlur);
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibility);
@@ -167,6 +178,7 @@ export default function Proctoring({ videoRef, interviewId, enabled, onAlert, to
     const poll = setInterval(() => { if (!document.hasFocus()) leave(); else back(); }, 1000);
 
     return () => {
+      document.documentElement.removeEventListener("mouseleave", onPointerLeave);
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibility);
