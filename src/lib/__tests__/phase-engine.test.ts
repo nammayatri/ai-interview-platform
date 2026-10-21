@@ -50,6 +50,18 @@ describe("nextUnlockedHint", () => {
   });
 });
 
+describe("nextUnlockedHint expiry", () => {
+  const ladder = [
+    { order: 1, text: "early", scoreDiscount: 0.05, expiresAfterMin: 10 },
+    { order: 2, text: "late", scoreDiscount: 0.05, notBeforeMin: 12 },
+  ];
+  it("offers the early hint while its window is open", () => expect(nextUnlockedHint(ladder, [], 8, 0)?.order).toBe(1));
+  it("skips an unused hint after its window so the later hint is reachable", () => {
+    expect(nextUnlockedHint(ladder, [], 11, 0)).toBeNull();
+    expect(nextUnlockedHint(ladder, [], 13, 0)?.order).toBe(2);
+  });
+});
+
 describe("selectPuzzle", () => {
   const entry = (id: string, min: number): PoolEntry => ({ puzzleId: id, version: 1, title: id, runbook: { ...puzzleRunbook, expectedMin: min } });
   const pool = [entry("a", 4), entry("b", 6), entry("c", 9)];
@@ -64,13 +76,14 @@ describe("selectPuzzle", () => {
     expect(picks.size).toBeGreaterThan(1);
   });
   it("ordered mode picks the first that fits", () => expect(selectPuzzle(pool, 5, "x", "ordered")!.puzzleId).toBe("a"));
-  it("falls back to the shortest within three minutes of the remaining time", () => {
-    expect(selectPuzzle(pool, 2, "x")!.puzzleId).toBe("a"); // shortest is 4 min, within 2 + 3
+  it("falls back to the shortest when none fits but there is real time (the stage time caps it)", () => {
+    expect(selectPuzzle(pool, 5, "x")!.puzzleId).toBe("a");
+    expect(selectPuzzle([entry("long", 40)], 30, "x")!.puzzleId).toBe("long"); // a 40 min puzzle in a 30 min stage still runs
   });
   it("a specific puzzle always runs, even when it does not fit the time", () => {
     expect(selectPuzzle([entry("long", 30)], 2, "x", "specific")!.puzzleId).toBe("long");
   });
-  it("returns null when even the shortest is too long", () => expect(selectPuzzle(pool, 0.5, "x")).toBeNull());
+  it("returns null only when there is almost no time", () => expect(selectPuzzle(pool, 2, "x")).toBeNull());
   it("returns null for an empty pool", () => expect(selectPuzzle([], 30, "x")).toBeNull());
 });
 

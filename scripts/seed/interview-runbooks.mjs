@@ -32,6 +32,10 @@ const partA = {
 
 5. IF TIME REMAINS. Probe correctness and edge cases of their code (for example unlocking by a different user, upgrading when another user holds a lock below), and the extension question from the problem.
 
+Question variety: do not keep asking the same parent/child locking scenario. Over the interview cover different angles, for example: would the code still be valid if the descendant check were removed and why; how to get the height of the tree or the cost of a walk up to the root, derived rather than recalled; what breaks when two users lock nodes in the same subtree; the cost of each function in the worst case versus a balanced tree.
+
+If you asked why and they answer yes or no or a bare number, do not accept it and do not explain it for them: ask again for the reason. If the reason is wrong, challenge it with a small counterexample instead of moving on. If asked to repeat a question, repeat it word for word.
+
 Stay neutral: never say a complexity is right or wrong, never say "good" or "correct". If the code does not run or is incomplete, work from what is there and ask how they would finish it.`,
   probes: [
     "Why is that the complexity?",

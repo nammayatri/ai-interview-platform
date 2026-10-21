@@ -65,3 +65,16 @@ describe("rollupDimensions", () => {
     expect(Object.values(r.sources).every((v) => v === "global")).toBe(true);
   });
 });
+
+describe("a puzzle only feeds reasoning and communication", () => {
+  it("never produces technical depth or domain knowledge, even if a criterion maps there", () => {
+    const rubric = [
+      { id: "a", text: "a", weight: 1, mapsTo: "technicalDepth" as const },
+      { id: "b", text: "b", weight: 1, mapsTo: "problemSolving" as const },
+    ];
+    const r = rollupDimensions([{ key: "puzzle", scoreWeight: 1, rubric, criteria: [{ id: "a", credit: "missed", evidence: "" }, { id: "b", credit: "met", evidence: "" }], hintsUsed: [], hintLadder: [] }]);
+    expect(r.scores.technicalDepth).toBeUndefined();
+    expect(r.sources.technicalDepth).toBe("global");
+    expect(r.scores.problemSolving).toBe(5);
+  });
+});

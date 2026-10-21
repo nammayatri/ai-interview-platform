@@ -4,7 +4,7 @@ import { generateScorecard } from "../ai";
 import { getOrgAISettings } from "../ai-settings";
 import { normalizeScorecard } from "../normalize-scorecard";
 import { parseScorecardJSON } from "../parse-scorecard";
-import { calculateOverall, calculateRecommendation, type DimScores } from "../scorecard-calc";
+import { calculateOverall, calculateRecommendation, type DimKey, type DimScores } from "../scorecard-calc";
 import type { Interview } from "../store";
 import { getPhases } from "../phase-store";
 import { describePhase, scorePhase, toRollupInput, type PhaseScorecard } from "./phase-scoring";
@@ -22,7 +22,15 @@ export async function buildScorecard(interview: Interview): Promise<ReturnType<t
   const isDsa = interview.roundType === "DSA Review";
 
   const phaseResult = isDsa ? await scoreCompletedPhases(interview) : null;
-  const parsed = parseScorecardJSON(await generateScorecard(interview, phaseResult ? formatStageResults(phaseResult.described, phaseResult.skipped) : undefined));
+  // A puzzle-only interview never asks for code, so technical depth and domain knowledge are not assessed at all.
+  const notAssessed: DimKey[] = phaseResult && !phaseResult.ranCoding && phaseResult.described.length > 0 ? ["technicalDepth", "domainKnowledge"] : [];
+  const stageText = phaseResult
+    ? formatStageResults(phaseResult.described, phaseResult.skipped) +
+      (notAssessed.length
+        ? "\n\nSCOPE NOTE: this interview was a reasoning puzzle only. Technical depth (code, data structures, tools) and domain knowledge were NOT part of it. Do not list missing code, complexity analysis or tooling as weaknesses or as 'not tested' gaps, and do not lower any score for them. Judge the candidate on the puzzle: how far they got, the reasoning, the hints they needed and how they communicated."
+        : "")
+    : undefined;
+  const parsed = parseScorecardJSON(await generateScorecard(interview, stageText));
 
   if (phaseResult) {
     const { scores, sources } = rollupDimensions(phaseResult.inputs);
@@ -41,8 +49,9 @@ export async function buildScorecard(interview: Interview): Promise<ReturnType<t
     cultureFit: parsed.cultureFit ?? 3,
   };
   const orgSettings = await getOrgAISettings(interview.orgId);
-  parsed.overall = calculateOverall(dimScores, interview.role);
-  parsed.recommendation = calculateRecommendation(parsed.overall, dimScores, orgSettings);
+  parsed.overall = calculateOverall(dimScores, interview.role, notAssessed);
+  parsed.recommendation = calculateRecommendation(parsed.overall, dimScores, orgSettings, notAssessed);
+  if (notAssessed.length) parsed.notAssessed = notAssessed;
   return normalizeScorecard(parsed);
 }
 
@@ -71,5 +80,6 @@ async function scoreCompletedPhases(interview: Interview) {
     .filter((x): x is NonNullable<typeof x> => x !== null);
   const described = phases.map((p, i) => describePhase(p, results[i] as PhaseScorecard));
   const skipped = (await getPhases(interview.id)).filter((p) => p.status === "skipped").map((p) => ({ key: p.phaseKey, reason: (p.endReason || "skipped").replace(/_/g, " ") }));
-  return { inputs, described, skipped };
+  const ranCoding = phases.some((p) => p.phaseKey === "parta" || p.phaseKey === "dsa");
+  return { inputs, described, skipped, ranCoding };
 }

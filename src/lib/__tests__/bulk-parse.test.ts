@@ -32,7 +32,13 @@ describe("mapBulkRows", () => {
   });
   it("names the missing columns", () => {
     const r = mapBulkRows([["email", "name"], ["a@x.io", "A"]], { needCode: true });
-    expect(r.fatal).toMatch(/Missing columns: role, parta_code/);
+    expect(r.fatal).toMatch(/Missing column: parta_code/);
+  });
+  it("role is optional: only email and name are needed for a puzzle-only template", () => {
+    const r = mapBulkRows([["email", "name"], ["a@x.io", "A"], ["b@x.io", "B"]], { needCode: false });
+    expect(r.fatal).toBeUndefined();
+    expect(r.rows.map((x) => x.errors)).toEqual([[], []]);
+    expect(r.rows[0].role).toBe("Software Engineer");
   });
   it("does not need parta_code when the template has no Part A", () => {
     const r = mapBulkRows([["email", "name", "role"], ["a@x.io", "A", "SDE"]], { needCode: false });

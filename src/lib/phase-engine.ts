@@ -116,6 +116,9 @@ export function selectDsaProblem(pool: DsaPoolEntry[], seed: string, selection: 
   return pickSeeded(pool, seed);
 }
 
+/** Below this many minutes a puzzle that does not fit is skipped instead of started. */
+export const MIN_PUZZLE_RUN_MIN = 5;
+
 export function selectPuzzle(
   pool: PoolEntry[],
   remainingMin: number,
@@ -130,8 +133,10 @@ export function selectPuzzle(
     if (selection === "ordered") return fitting[0];
     return pickSeeded(fitting, seed);
   }
+  // Nothing fits the stage time. Running the shortest puzzle (its stage time caps it) is better than silently skipping
+  // the whole stage, which would end a puzzle-only interview the moment it starts. Only skip when there is almost no time.
   const shortest = pool.reduce((a, b) => (b.runbook.expectedMin < a.runbook.expectedMin ? b : a));
-  return shortest.runbook.expectedMin <= remainingMin + 3 ? shortest : null;
+  return remainingMin >= MIN_PUZZLE_RUN_MIN ? shortest : null;
 }
 
 // ─── Hints ──────────────────────────────────────────────────────────────────
@@ -143,7 +148,8 @@ export function selectPuzzle(
  */
 export function nextUnlockedHint(ladder: Hint[], used: number[], elapsedMin: number, weakAnswers: number): Hint | null {
   const sorted = ladder.slice().sort((a, b) => a.order - b.order);
-  const next = sorted.find((h) => used.indexOf(h.order) === -1);
+  // An unused hint whose window has passed is skipped, so a candidate who never needed the early hints can still get later ones.
+  const next = sorted.find((h) => used.indexOf(h.order) === -1 && !(h.expiresAfterMin !== undefined && elapsedMin > h.expiresAfterMin));
   if (!next) return null;
   if (next.notBeforeMin !== undefined && elapsedMin < next.notBeforeMin) return null;
   if (next.afterWeakAnswers !== undefined && weakAnswers < next.afterWeakAnswers) return null;

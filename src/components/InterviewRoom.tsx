@@ -129,6 +129,20 @@ function formatAIText(text: string) {
   return <>{elements}</>;
 }
 
+/**
+ * Best effort lock-down while in fullscreen (Chromium only): asks the browser to send tab, window and navigation keys
+ * to the page instead of acting on them (Ctrl/Cmd+Tab, Ctrl/Cmd+W, Alt+Tab where the OS allows, Esc). The OS still owns
+ * a few shortcuts (Cmd+Tab on macOS, Ctrl+Alt+Del), so this reduces switching but cannot make it impossible.
+ */
+async function lockKeyboardInFullscreen() {
+  try {
+    const kb = (navigator as any).keyboard;
+    if (kb && typeof kb.lock === "function") await kb.lock();
+  } catch {
+    /* not supported or refused: the leave-screen detection still applies */
+  }
+}
+
 export function InterviewRoom({ interviewId }: { interviewId: string }) {
   // Core state
   const [interviewData, setInterviewData] = useState<InterviewData | null>(null);
@@ -164,6 +178,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   const [fullscreenCountdown, setFullscreenCountdown] = useState(0);
   const [isEnding, setIsEnding] = useState(false);
   const [screenSharing, setScreenSharing] = useState(false);
+  const [screenShareError, setScreenShareError] = useState("");
   const isMobile = typeof navigator !== "undefined" && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
   const [expired, setExpired] = useState(false);
   const [chatInput, setChatInput] = useState("");
@@ -969,6 +984,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     // Request fullscreen
     try {
       await document.documentElement.requestFullscreen();
+      lockKeyboardInFullscreen();
     } catch (err) {
       console.warn("Fullscreen request denied:", err);
     }
@@ -1084,7 +1100,11 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         screen_share_stopped: 0.5,
         fullscreen_exit: 0.25,
         window_blur: 0.5,
+        left_screen: 0.5,
         camera_off: 1,
+        copy_attempt: 0.25,
+        paste_attempt: 0.25,
+        screenshot_attempt: 0.5,
       };
       const weight = strikeWeights[event.type] || 0;
       if (weight > 0) {
@@ -1255,6 +1275,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
             onClick={async () => {
               try {
                 await document.documentElement.requestFullscreen();
+                lockKeyboardInFullscreen();
                 setNeedsFullscreenClick(false);
                 setFullscreenCountdown(0);
               } catch {
@@ -1465,6 +1486,14 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
                       video: { displaySurface: "monitor" } as any,
                       audio: false,
                     });
+                    // Only the entire screen is accepted — a tab or window would hide other apps.
+                    const surface = (screenStream.getVideoTracks()[0].getSettings() as any).displaySurface;
+                    if (surface && surface !== "monitor") {
+                      screenStream.getTracks().forEach((t) => t.stop());
+                      setScreenShareError("You shared a tab or window. Please choose “Entire Screen”.");
+                      return;
+                    }
+                    setScreenShareError("");
                     // Detect when user stops sharing
                     screenStream.getVideoTracks()[0].onended = () => {
                       setScreenSharing(false);
@@ -1485,6 +1514,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
                 Share Your Entire Screen
               </button>
               <p className="text-[10px] text-zinc-500 text-center mt-1.5">Required — select "Entire Screen" when prompted</p>
+              {screenShareError && <p className="text-[11px] text-red-400 text-center mt-1.5">{screenShareError}</p>}
             </div>
           ) : (
             <div className="pt-2 border-t border-white/10 flex items-center justify-center gap-2 text-green-400 text-sm">
@@ -1531,7 +1561,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         <div className="flex items-center gap-3">
           {/* STT Status + Retry */}
           <div className="flex items-center gap-2">
-            <span className={`inline-flex h-2 w-2 rounded-full ${stt.connected ? "bg-green-500" : stt.everConnected ? "bg-red-500 animate-pulse" : "bg-yellow-500"}`} />
+            <span className={`inline-flex h-2 w-2 rounded-full ${stt.status === "live" ? "bg-green-500" : stt.status === "failed" ? "bg-red-500 animate-pulse" : "bg-yellow-500 animate-pulse"}`} title={stt.status === "live" ? "Microphone transcription is working" : "Voice connection is being restored"} />
             <button
               onClick={() => {
                 if (activeAbortRef.current) { activeAbortRef.current.abort(); activeAbortRef.current = null; }
@@ -1724,7 +1754,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
               {transcript.map((entry, i) => (
                 <div
                   key={i}
-                  className={`flex gap-3 ${entry.role === "ai" ? "" : "flex-row-reverse"}`}
+                  className={`flex gap-3 animate-fade-in-up ${entry.role === "ai" ? "" : "flex-row-reverse"}`}
                 >
                   {/* Avatar */}
                   <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
@@ -1849,23 +1879,22 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         </div>
       </div>
 
+      {/* Voice connection problem: say so, keep typing available, offer a retry */}
+      {isStarted && stt.everConnected && (stt.status === "reconnecting" || stt.status === "failed") && (
+        <div className={`mx-auto mb-1 flex max-w-3xl items-center justify-center gap-3 rounded-lg border px-3 py-2 text-xs ${stt.status === "failed" ? "border-red-500/30 bg-red-500/10 text-red-300" : "border-amber-500/30 bg-amber-500/10 text-amber-300"}`}>
+          <span>
+            {stt.status === "failed"
+              ? "We can't hear you right now. Please type your answer in the box above while we reconnect your microphone."
+              : "Voice connection interrupted, reconnecting… Your words may not be captured, you can type your answer instead."}
+          </span>
+          <button onClick={() => stt.reconnect()} className="shrink-0 rounded-md bg-white/10 px-2 py-1 font-medium hover:bg-white/20">Reconnect now</button>
+        </div>
+      )}
+
       {/* Bottom Controls */}
       <div className="flex items-center justify-center gap-2 sm:gap-4 py-3 sm:py-4 flex-wrap">
-        {/* Voice mode switch: Auto (AI replies after you pause) ⇄ Manual (you start/stop with the mic or Ctrl+M) */}
-        <div className="flex items-center gap-2 rounded-full border border-zinc-700 px-3 py-1.5" title="Auto: the AI replies after you pause. Manual: you decide when to start and stop speaking.">
-          <span className={`text-xs font-medium ${!manualVoice ? "text-white" : "text-zinc-500"}`}>Auto</span>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={manualVoice}
-            aria-label="Voice mode: automatic or manual"
-            onClick={() => setManualVoice((m) => !m)}
-            className={`relative h-6 w-11 rounded-full transition-colors ${manualVoice ? "bg-blue-500" : "bg-zinc-600"}`}
-          >
-            <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${manualVoice ? "translate-x-5" : ""}`} />
-          </button>
-          <span className={`text-xs font-medium ${manualVoice ? "text-white" : "text-zinc-500"}`}>Manual</span>
-        </div>
+        {/* Main: speak + mic + camera */}
+        <div className="flex items-center gap-2 rounded-full border border-white/10 bg-zinc-900/60 p-1.5">
         {manualVoice && (
           <button
             type="button"
@@ -1884,16 +1913,9 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
             <span>
               {stt.talkState === "listening" ? "Listening… tap to send" : stt.talkState === "sending" ? "Sending…" : "Tap to speak"}
             </span>
-            <kbd className="rounded bg-black/25 px-1.5 py-0.5 text-[10px] font-medium">Ctrl+M</kbd>
+            <kbd className="hidden rounded bg-black/25 px-1.5 py-0.5 text-[10px] font-medium sm:inline">Ctrl+M</kbd>
           </button>
         )}
-        <button
-          onClick={() => setAiVoiceOn((v) => !v)}
-          title={aiVoiceOn ? "Turn the AI's voice off (replies are shown as text only)" : "Turn the AI's voice on"}
-          className={`rounded-full border px-4 py-2.5 text-sm font-medium transition-all ${aiVoiceOn ? "border-zinc-600 text-zinc-300 hover:bg-zinc-800" : "border-amber-400/60 bg-amber-500/15 text-amber-200"}`}
-        >
-          {aiVoiceOn ? "AI voice: On" : "AI voice: Off"}
-        </button>
         <ControlButton
           active={micEnabled}
           onClick={toggleMic}
@@ -1918,6 +1940,32 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
           }
           label={cameraEnabled ? "Stop Video" : "Start Video"}
         />
+        </div>
+        {/* Voice settings: quieter, secondary */}
+        <div className="flex items-center gap-2">
+        {/* Voice mode switch: Auto (AI replies after you pause) ⇄ Manual (you start/stop with the mic or Ctrl+M) */}
+        <div className="flex items-center gap-1.5 rounded-full border border-zinc-800 px-2.5 py-1 opacity-80 hover:opacity-100" title="Auto: the AI replies after you pause. Manual: you decide when to start and stop speaking.">
+          <span className={`text-[11px] font-medium ${!manualVoice ? "text-white" : "text-zinc-500"}`}>Auto</span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={manualVoice}
+            aria-label="Voice mode: automatic or manual"
+            onClick={() => setManualVoice((m) => !m)}
+            className={`relative h-6 w-11 rounded-full transition-colors ${manualVoice ? "bg-blue-500" : "bg-zinc-600"}`}
+          >
+            <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${manualVoice ? "translate-x-5" : ""}`} />
+          </button>
+          <span className={`text-[11px] font-medium ${manualVoice ? "text-white" : "text-zinc-500"}`}>Manual</span>
+        </div>
+        <button
+          onClick={() => setAiVoiceOn((v) => !v)}
+          title={aiVoiceOn ? "Turn the AI's voice off (replies are shown as text only)" : "Turn the AI's voice on"}
+          className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-all ${aiVoiceOn ? "border-zinc-700 text-zinc-400 hover:bg-zinc-800" : "border-amber-400/60 bg-amber-500/15 text-amber-200"}`}
+        >
+          {aiVoiceOn ? "AI voice: On" : "AI voice: Off"}
+        </button>
+        </div>
         {/* Skip button moved to chat area */}
         {/* Retry — re-send last transcript after AI failure */}
         {aiError && !isProcessingRef.current && (

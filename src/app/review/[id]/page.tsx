@@ -1,5 +1,6 @@
 "use client";
 
+import { summarizeIntegrity } from "@/lib/integrity";
 import { useState, useEffect, useRef } from "react";
 import { rescoreAndWait } from "@/lib/client/rescore";
 import { useParams, useSearchParams } from "next/navigation";
@@ -9,6 +10,7 @@ import { ReviewPhases } from "@/components/dsa/ReviewPhases";
 interface ScoreItem {
   dimension: string;
   score: number;
+  notAssessed?: boolean;
 }
 
 interface Evidence {
@@ -276,6 +278,12 @@ export default function ReviewPage() {
   return (
     <DashboardLayout>
       <div className="max-w-5xl mx-auto space-y-6">
+        {(() => { const ig = summarizeIntegrity(proctoring); return ig.total > 0 ? (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800" role="alert">
+            <p className="font-semibold">Possible plagiarism / content leak</p>
+            <p className="mt-0.5">{ig.headline.replace("Possible plagiarism / content leak: ", "")} See the Proctoring tab for the times.</p>
+          </div>
+        ) : null; })()}
         {/* Header */}
         <div className="card p-6 animate-fade-in-up flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
@@ -341,10 +349,13 @@ export default function ReviewPage() {
             Scores
           </h2>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:flex md:flex-wrap justify-center gap-4 sm:gap-6 md:gap-10">
-            {scorecard.scores.map((s) => (
+            {scorecard.scores.filter((s) => !s.notAssessed).map((s) => (
               <ScoreRing key={s.dimension} score={s.score} label={s.dimension} />
             ))}
           </div>
+          {scorecard.scores.some((s) => s.notAssessed) && (
+            <p className="mt-3 text-center text-xs text-gray-500">Not assessed in this interview: {scorecard.scores.filter((s) => s.notAssessed).map((s) => s.dimension).join(", ")}. They are left out of the overall score.</p>
+          )}
         </div>
 
         {/* DSA Review: phases, rubric results, code, scratchpad (not part of share links) */}

@@ -1,5 +1,6 @@
 "use client";
 
+import { summarizeIntegrity } from "@/lib/integrity";
 import { useState, useEffect, useRef } from "react";
 import { rescoreAndWait } from "@/lib/client/rescore";
 import Link from "next/link";
@@ -179,6 +180,12 @@ export default function InterviewDetailPage({ params }: { params: { id: string }
   return (
     <DashboardLayout>
       <div className="max-w-6xl mx-auto">
+        {(() => { const ig = summarizeIntegrity(interview.proctoring); return ig.total > 0 ? (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800" role="alert">
+            <p className="font-semibold">Possible plagiarism / content leak</p>
+            <p className="mt-0.5">{ig.headline.replace("Possible plagiarism / content leak: ", "")} See the Proctoring tab for the times.</p>
+          </div>
+        ) : null; })()}
         {/* Breadcrumb */}
         <div className="flex items-center gap-2 text-sm mb-6 animate-fade-in-down">
           <Link href="/dashboard" className="text-gray-500 hover:text-gray-700 transition-colors">
@@ -395,7 +402,7 @@ export default function InterviewDetailPage({ params }: { params: { id: string }
                 {/* Dimension Scores */}
                 <div className="space-y-3 mb-6">
                   {interview.scorecard.scores
-                    ? interview.scorecard.scores.map((s: any) => (
+                    ? interview.scorecard.scores.filter((s: any) => !s.notAssessed).map((s: any) => (
                         <ScoreBar key={s.dimension} label={s.dimension} value={s.score} />
                       ))
                     : Object.entries(dimensionLabels).map(([key, label]) => (
@@ -406,6 +413,10 @@ export default function InterviewDetailPage({ params }: { params: { id: string }
                         />
                       ))}
                 </div>
+
+                {interview.scorecard.scores?.some((s: any) => s.notAssessed) && (
+                  <p className="-mt-3 mb-6 text-xs text-gray-500">Not assessed in this interview: {interview.scorecard.scores.filter((s: any) => s.notAssessed).map((s: any) => s.dimension).join(", ")}. They are left out of the overall score.</p>
+                )}
 
                 {/* Strengths & Weaknesses */}
                 <div className="grid grid-cols-2 gap-4 mb-6">

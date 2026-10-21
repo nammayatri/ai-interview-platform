@@ -7,8 +7,12 @@ export function normalizeScorecard(raw: any) {
     { dimension: "Culture Fit", score: raw.cultureFit ?? raw.culture_fit ?? 3 },
   ];
 
+  const na: string[] = Array.isArray(raw.notAssessed) ? raw.notAssessed : [];
+  const keyOf: Record<string, string> = { "Technical Depth": "technicalDepth", Communication: "communication", "Problem Solving": "problemSolving", "Domain Knowledge": "domainKnowledge", "Culture Fit": "cultureFit" };
+  const flagged = scores.map((s) => (na.includes(keyOf[s.dimension]) ? { ...s, notAssessed: true } : s));
+
   return {
-    scores,
+    scores: flagged,
     overall: raw.overall ?? 3,
     recommendation: raw.recommendation ?? "no_hire",
     overallAssessment: raw.summary ?? raw.overallAssessment ?? "No assessment available.",
@@ -23,6 +27,7 @@ export function normalizeScorecard(raw: any) {
     coverage: raw.coverage ?? null,
     // DSA Review only: per-phase rubric results and where each dimension score came from.
     ...(raw.phases ? { phases: raw.phases } : {}),
+    ...(na.length ? { notAssessed: na } : {}),
     ...(raw.dimensionSources ? { dimensionSources: raw.dimensionSources } : {}),
   };
 }

@@ -27,6 +27,8 @@ interface UseSTTOptions {
 
 interface UseSTTReturn {
   connected: boolean;
+  status: "connecting" | "live" | "reconnecting" | "failed"; // failed = no way to hear the candidate; show the typing fallback
+  reconnect: () => void; // user-triggered immediate retry
   everConnected: boolean;
   provider: STTProviderName | null;
   start: () => void;
@@ -53,6 +55,9 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
   const [connected, setConnected] = useState(false);
   const [everConnected, setEverConnected] = useState(false);
   const [activeProvider, setActiveProvider] = useState<STTProviderName | null>(null);
+  const [status, setStatus] = useState<"connecting" | "live" | "reconnecting" | "failed">("connecting");
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleReconnectRef = useRef<() => void>(() => {});
 
   const dgSocketRef = useRef<WebSocket | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -166,6 +171,13 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
         setConnected(true);
         setEverConnected(true);
         setActiveProvider("deepgram");
+        setStatus("live");
+        // Deepgram is back: drop the browser fallback so the same speech is not transcribed twice
+        if (browserRecRef.current) {
+          if (browserRecRef.current._echoGuard) clearInterval(browserRecRef.current._echoGuard);
+          try { browserRecRef.current.abort(); } catch {}
+          browserRecRef.current = null;
+        }
         console.log("[STT] Connected via WebSocket proxy");
 
         const audioTracks = mediaStream.current!.getAudioTracks();
@@ -275,23 +287,13 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
         // Only reset reconnect count if connection lasted >5s (stable)
         if (connectionDuration > 5000) reconnectCountRef.current = 0;
 
-        // check stoppedRef + reconnecting guard to prevent overlapping chains
-        if (!stoppedRef.current && !isEnding.current && !reconnectingRef.current && reconnectCountRef.current < 5) {
-          reconnectingRef.current = true;
-          reconnectCountRef.current++;
-          const delay = Math.min(2000 * reconnectCountRef.current, 10000);
-          setTimeout(() => {
-            reconnectingRef.current = false;
-            if (!stoppedRef.current) startDeepgram();
-          }, delay);
-        } else if (reconnectCountRef.current >= 5) {
-          console.warn("[STT:deepgram] Max retries — falling back to browser");
-          startBrowserRef.current?.();
-        }
+        // Never give up: keep retrying with backoff (the candidate may be on a flaky network)
+        if (!stoppedRef.current && !isEnding.current) scheduleReconnectRef.current();
       };
 
       return true;
     } catch {
+      if (!stoppedRef.current && !isEnding.current) scheduleReconnectRef.current();
       return false;
     }
   }, [token, isAISpeaking, isEnding, mediaStream, handleFinalText, handleInterimText, clearBuffer]);
@@ -313,6 +315,7 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
         setConnected(true);
         setEverConnected(true);
         setActiveProvider("browser");
+        setStatus("live");
       };
 
       recognition.onresult = (event: any) => {
@@ -367,12 +370,44 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
   }, [isAISpeaking, isEnding, handleFinalText, handleInterimText, talk]);
   startBrowserRef.current = startBrowser;
 
+  // Reconnect with backoff (1s, 2s, 4s, 8s, then every 15s) until it works or the interview ends.
+  // After 3 failed attempts the browser's own speech recogniser covers the gap; if neither works the
+  // status becomes "failed" so the room can tell the candidate to type.
+  scheduleReconnectRef.current = () => {
+    if (reconnectTimerRef.current || stoppedRef.current) return;
+    reconnectCountRef.current++;
+    const n = reconnectCountRef.current;
+    if (n >= 3 && !browserRecRef.current) {
+      const ok = n === 3 ? startBrowserRef.current?.() : false;
+      setStatus(ok ? "live" : "failed");
+    } else {
+      setStatus(browserRecRef.current ? "live" : "reconnecting");
+    }
+    const delay = Math.min(1000 * 2 ** (n - 1), 15000);
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      if (stoppedRef.current || isEnding.current) return;
+      startDeepgram();
+    }, delay);
+  };
+
+  const reconnect = useCallback(() => {
+    if (stoppedRef.current || isEnding.current) return;
+    if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
+    const rs = dgSocketRef.current?.readyState;
+    if (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) return;
+    reconnectCountRef.current = 0;
+    setStatus("reconnecting");
+    startDeepgram();
+  }, [startDeepgram, isEnding]);
+
   // ─── Public API ───────────────────────────────────────────────────────
 
   const start = useCallback(() => {
     stoppedRef.current = false;
     reconnectCountRef.current = 0; // #5: only reset here, not in onopen
     reconnectingRef.current = false;
+    setStatus("connecting");
     clearBuffer(); // #1: clear stale buffer on start
     const first = providers[0] || "deepgram";
     console.log(`[STT] Starting (transport=${first}, backend configured on server)`);
@@ -382,6 +417,7 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
 
   const stop = useCallback(() => {
     stoppedRef.current = true;
+    if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
     clearBuffer(); // #1, #2: clear buffer + cancel silence timer
 
     // Deepgram cleanup
@@ -411,18 +447,26 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
 
   useEffect(() => {
     if (!isStarted) return;
-    const monitor = setInterval(() => {
+    const check = () => {
       if (stoppedRef.current || isEnding.current) return;
-      // #6: skip if reconnect is already in progress
-      if (reconnectingRef.current) return;
-      if (activeProvider === "deepgram" && dgSocketRef.current?.readyState !== WebSocket.OPEN && !connected) {
-        console.log("[STT] Health check — reconnecting...");
-        reconnectingRef.current = true;
-        startDeepgram();
+      if (!providers.includes("deepgram")) return;
+      const open = dgSocketRef.current?.readyState === WebSocket.OPEN;
+      if (!open && !reconnectTimerRef.current && dgSocketRef.current?.readyState !== WebSocket.CONNECTING) {
+        console.log("[STT] Health check — socket not open, reconnecting...");
+        scheduleReconnectRef.current();
       }
-    }, 15000);
-    return () => clearInterval(monitor);
-  }, [isStarted, connected, activeProvider, isEnding, startDeepgram]);
+    };
+    const monitor = setInterval(check, 8000);
+    // Coming back online or returning to the tab: do not wait for the next tick
+    const onBack = () => { if (document.visibilityState !== "hidden") reconnect(); };
+    window.addEventListener("online", onBack);
+    document.addEventListener("visibilitychange", onBack);
+    return () => {
+      clearInterval(monitor);
+      window.removeEventListener("online", onBack);
+      document.removeEventListener("visibilitychange", onBack);
+    };
+  }, [isStarted, isEnding, providers, reconnect]);
 
   // ─── beforeunload: graceful close ─────────────────────────────────────
   // #22: send CloseStream on tab close/navigate
@@ -443,5 +487,5 @@ export function useSTT(options: UseSTTOptions): UseSTTReturn {
     return () => { stoppedRef.current = true; stop(); };
   }, [stop]);
 
-  return { connected, everConnected, provider: activeProvider, start, stop, submitNow, talkState, toggleTalk };
+  return { connected, status, reconnect, everConnected, provider: activeProvider, start, stop, submitNow, talkState, toggleTalk };
 }

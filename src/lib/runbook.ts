@@ -26,6 +26,8 @@ export interface Hint {
   text: string;
   notBeforeMin?: number;
   afterWeakAnswers?: number;
+  /** After this minute of the stage an unused hint is skipped, so later hints stay reachable (multi-stage puzzles). */
+  expiresAfterMin?: number;
   scoreDiscount: number;
 }
 
@@ -104,6 +106,8 @@ function validateHints(raw: unknown, errors: string[]): Hint[] {
     if (!Number.isFinite(discount) || discount < 0 || discount > 1) errors.push(`hintLadder[${i}]: scoreDiscount must be between 0 and 1`);
     const notBeforeMin = optNum(h.notBeforeMin);
     const afterWeakAnswers = optNum(h.afterWeakAnswers);
+    const expiresAfterMin = optNum(h.expiresAfterMin);
+    if (expiresAfterMin !== undefined && (Number.isNaN(expiresAfterMin) || expiresAfterMin < 0)) errors.push(`hintLadder[${i}]: expiresAfterMin must be >= 0`);
     if (notBeforeMin !== undefined && (Number.isNaN(notBeforeMin) || notBeforeMin < 0)) errors.push(`hintLadder[${i}]: notBeforeMin must be >= 0`);
     if (afterWeakAnswers !== undefined && (Number.isNaN(afterWeakAnswers) || afterWeakAnswers < 0)) errors.push(`hintLadder[${i}]: afterWeakAnswers must be >= 0`);
     hints.push({
@@ -111,6 +115,7 @@ function validateHints(raw: unknown, errors: string[]): Hint[] {
       text,
       ...(notBeforeMin !== undefined && !Number.isNaN(notBeforeMin) ? { notBeforeMin } : {}),
       ...(afterWeakAnswers !== undefined && !Number.isNaN(afterWeakAnswers) ? { afterWeakAnswers: Math.floor(afterWeakAnswers) } : {}),
+      ...(expiresAfterMin !== undefined && !Number.isNaN(expiresAfterMin) ? { expiresAfterMin } : {}),
       scoreDiscount: Number.isFinite(discount) ? discount : 0,
     });
   });

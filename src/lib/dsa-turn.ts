@@ -2,7 +2,8 @@
 //   prepareDsaTurn  -> saves the candidate message, resolves/advances the phase, builds the phase-scoped prompt
 //   finalizeDsaTurn -> parses markers from the model output and applies them (assess, hint, phase done, end)
 // Used by /api/ai-speak-stream, /api/ai-speak and /api/ai-response so every entry point behaves the same.
-import { buildInterviewPrompt, stripThinking } from "./ai";
+import { buildInterviewPrompt, callJudgeAI, stripThinking } from "./ai";
+import { directiveFor, JUDGE_INSTRUCTION, parseJudgeVerdict, withDirective } from "./answer-judge";
 import { getOrgAISettings } from "./ai-settings";
 import { canEndNow } from "./interview-time";
 import {
@@ -151,7 +152,13 @@ export async function prepareDsaTurn(interview: Interview, input: DsaTurnInput):
 
   const enriched: Interview = { ...interview, phases, scratchpad };
   const settings = await getOrgAISettings(interview.orgId);
-  const messages = buildInterviewPrompt(enriched, promptHistory as TranscriptEntry[], settings, { resolution, unlockedHint, scratchpad });
+  let messages = buildInterviewPrompt(enriched, promptHistory as TranscriptEntry[], settings, { resolution, unlockedHint, scratchpad });
+
+  // Hidden answer check (only when the candidate really answered: not a silence nudge or a phase opening)
+  const lastRow = history[history.length - 1];
+  if (phase && !ephemeral && input.trigger !== "phase_open" && lastRow && lastRow.role === "candidate" && history.length >= 2) {
+    messages = withDirective(messages, await judgeLastAnswer(interview.id, messages));
+  }
 
   const last = history[history.length - 1];
   return {
@@ -163,6 +170,21 @@ export async function prepareDsaTurn(interview: Interview, input: DsaTurnInput):
     expectAssess: !!phase && !ephemeral && !!last && last.role === "candidate",
     priorTransition,
   };
+}
+
+/** Returns a private directive for the interviewer's next reply, or null. Never throws, never blocks long. */
+async function judgeLastAnswer(interviewId: string, messages: { role: string; content: string }[]): Promise<string | null> {
+  if (process.env.JUDGE_AI_ENABLED === "false") return null;
+  const started = Date.now();
+  try {
+    const raw = await callJudgeAI([...messages, { role: "user", content: JUDGE_INSTRUCTION }]);
+    const verdict = parseJudgeVerdict(raw);
+    console.log(`[Judge] ${interviewId} verdict=${verdict ? verdict.verdict : "unreadable"} in ${Date.now() - started}ms`);
+    return directiveFor(verdict);
+  } catch (e: any) {
+    console.warn(`[Judge] skipped for ${interviewId} after ${Date.now() - started}ms: ${e?.message || e}`);
+    return null;
+  }
 }
 
 /** Applies the model output. `raw` may still contain thinking text and markers. */

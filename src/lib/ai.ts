@@ -1,3 +1,4 @@
+import { summarizeIntegrity } from "./integrity";
 import type { Interview, TranscriptEntry } from "./store";
 import { DEFAULT_AI_SETTINGS, AISettings, getOrgAISettings } from "./ai-settings";
 import { aiLimits } from "./ai-limits";
@@ -335,6 +336,17 @@ async function callAI(
   return cleaned;
 }
 
+/** Hidden answer check: fast, short, never reasons long. Env: JUDGE_AI_MODEL, JUDGE_AI_TIMEOUT_MS, JUDGE_AI_ENABLED=false to switch off. */
+export async function callJudgeAI(messages: { role: string; content: string }[]): Promise<string> {
+  const chat = getChatConfig();
+  return callAI(
+    { ...chat, model: process.env.JUDGE_AI_MODEL || chat.model, timeoutMs: parseInt(process.env.JUDGE_AI_TIMEOUT_MS || "7000", 10) || 7000, reasoningEffort: process.env.JUDGE_AI_REASONING_EFFORT || "low" },
+    messages,
+    parseInt(process.env.JUDGE_AI_MAX_TOKENS || "600", 10) || 600,
+    0
+  );
+}
+
 /** Interview conversation turn — fast, short, uses chat model. */
 async function callChatAI(
   messages: { role: string; content: string }[],
@@ -486,6 +498,7 @@ export async function generateScorecard(interview: Interview, stageResults?: str
   const proctoringText = interview.proctoring.length > 0
     ? interview.proctoring.map((e) => `[${e.severity.toUpperCase()}] ${e.type}: ${e.message} at ${e.timestamp}`).join("\n")
     : "No proctoring issues detected.";
+  const integrity = summarizeIntegrity(interview.proctoring);
 
   // Pair each interviewer message with the candidate response that immediately followed.
   // Lets the AI evaluate each Q→A as a discrete unit instead of scanning a flat transcript.
@@ -589,7 +602,7 @@ Then aggregate per-dimension scores from these per-pair judgments. Cite specific
 ${transcriptText}
 
 ## Proctoring
-${proctoringText}
+${integrity.headline ? `INTEGRITY ALERT: ${integrity.headline} Begin proctoringNotes with this sentence, stating it as a suspected plagiarism / content leak for the reviewer to follow up. Do not let it change the scores on its own.\n` : ""}${proctoringText}
 
 EVALUATION CONTEXT:
 - The transcript shows what was actually discussed.

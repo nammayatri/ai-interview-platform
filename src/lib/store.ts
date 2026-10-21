@@ -281,7 +281,11 @@ export async function getProctoringViolationCount(interviewId: string): Promise<
         WHEN 'screen_share_stopped' THEN 0.5
         WHEN 'fullscreen_exit' THEN 0.25
         WHEN 'window_blur' THEN 0.5
+        WHEN 'left_screen' THEN 0.5
         WHEN 'camera_off' THEN 1
+        WHEN 'copy_attempt' THEN 0.25
+        WHEN 'paste_attempt' THEN 0.25
+        WHEN 'screenshot_attempt' THEN 0.5
         ELSE 0
       END
     ), 0) as weighted_count

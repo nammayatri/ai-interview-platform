@@ -92,7 +92,7 @@ export function HintLadderEditor({ hints, onChange }: { hints: any[]; onChange: 
             <RemoveButton onClick={() => onChange(renumber(hints.filter((_, j) => j !== i)))} />
           </div>
           <textarea value={h.text || ""} rows={2} onChange={(e) => set(i, { text: e.target.value })} placeholder="The nudge, spoken as written" className="input-field" />
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <div>
               <label className="text-[11px] text-gray-500">Not before minute</label>
               <input type="number" min={0} value={numVal(h.notBeforeMin)} onChange={(e) => set(i, { notBeforeMin: toNum(e.target.value) })} placeholder="any" className="input-field" />
@@ -100,6 +100,10 @@ export function HintLadderEditor({ hints, onChange }: { hints: any[]; onChange: 
             <div>
               <label className="text-[11px] text-gray-500">After weak answers</label>
               <input type="number" min={0} value={numVal(h.afterWeakAnswers)} onChange={(e) => set(i, { afterWeakAnswers: toNum(e.target.value) })} placeholder="any" className="input-field" />
+            </div>
+            <div>
+              <label className="text-[11px] text-gray-500" title="After this minute the hint is skipped if unused">Skip after minute</label>
+              <input type="number" min={0} value={numVal(h.expiresAfterMin)} onChange={(e) => set(i, { expiresAfterMin: toNum(e.target.value) })} placeholder="never" className="input-field" />
             </div>
             <div>
               <label className="text-[11px] text-gray-500">Score discount (0-1)</label>

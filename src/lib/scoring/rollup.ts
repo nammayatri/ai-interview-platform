@@ -49,7 +49,11 @@ export function phaseScore(p: RollupPhaseInput): number {
   return 1 + 4 * clamp01(phaseCreditFraction(p));
 }
 
+/** A puzzle tests reasoning and communication only; code and domain knowledge come from Part A and DSA stages. */
+const PUZZLE_DIMS: Dimension[] = ["problemSolving", "communication", "cultureFit"];
+
 export function dimFraction(p: RollupPhaseInput, dim: Dimension): number | null {
+  if (p.key === "puzzle" && !PUZZLE_DIMS.includes(dim)) return null;
   const mapped = p.rubric.filter((r) => r.mapsTo === dim);
   const f = weightedFraction(mapped, p.criteria);
   if (f === null) return null;

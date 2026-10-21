@@ -5,7 +5,13 @@ let ttsInstance: TTSProvider | null = null;
 export function getTTSProvider(): TTSProvider {
   if (ttsInstance) return ttsInstance;
 
-  const provider = process.env.TTS_PROVIDER || "deepgram";
+  let provider = process.env.TTS_PROVIDER || "deepgram";
+  // Chosen provider has no key configured: use Deepgram (female voice) rather than fail every reply.
+  const keyFor: Record<string, string> = { cartesia: "CARTESIA_API_KEY", elevenlabs: "ELEVENLABS_API_KEY", sarvam: "SARVAM_API_KEY" };
+  if (keyFor[provider] && !process.env[keyFor[provider]] && process.env.DEEPGRAM_API_KEY) {
+    console.warn(`[TTS] ${provider} selected but ${keyFor[provider]} is not set; falling back to deepgram`);
+    provider = "deepgram";
+  }
 
   switch (provider) {
     case "sarvam": {

@@ -11,11 +11,14 @@ export class DeepgramTTS implements TTSProvider {
 
     // 15s hard timeout — without this, if Deepgram is slow/hung, the entire
     // streaming pipeline hangs forever and the client safety timeout fires at 30s.
+    // Female voice by default (Asteria). Override with DEEPGRAM_TTS_MODEL, e.g. aura-luna-en, aura-athena-en.
+    const model = process.env.DEEPGRAM_TTS_MODEL || "aura-asteria-en";
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
 
     try {
-      const res = await fetch("https://api.deepgram.com/v1/speak?model=aura-angus-en", {
+      const res = await fetch(`https://api.deepgram.com/v1/speak?model=${encodeURIComponent(model)}`, {
         method: "POST",
         headers: {
           Authorization: `Token ${apiKey}`,

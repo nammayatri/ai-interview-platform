@@ -1,5 +1,5 @@
 // Reads the bulk-upload file (CSV or Excel) into candidate rows and validates them.
-// Columns: email, name, role, parta_code (parta_code is only needed when the template has a Part A stage).
+// Columns: email, name, parta_code (only when the template has a Part A stage), role (optional).
 import { LIMITS } from "./runbook";
 import { MAX_BULK_ROWS, type BulkRow } from "./bulk-shared";
 
@@ -67,6 +67,8 @@ const ALIASES: Record<"email" | "name" | "role" | "code", string[]> = {
   role: ["role", "jobrole", "position", "designation"],
   code: ["partacode", "partacodes", "partacandidatecode", "code", "submission", "partasubmission", "partacodesubmission"],
 };
+/** Used when the file has no role column or the cell is empty. */
+export const DEFAULT_ROLE = "Software Engineer";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function mapBulkRows(table: string[][], opts: { needCode: boolean }): BulkParseResult {
@@ -77,10 +79,9 @@ export function mapBulkRows(table: string[][], opts: { needCode: boolean }): Bul
   const missing: string[] = [];
   if (idx.email < 0) missing.push("email");
   if (idx.name < 0) missing.push("name");
-  if (idx.role < 0) missing.push("role");
   if (opts.needCode && idx.code < 0) missing.push("parta_code");
   if (missing.length) {
-    return { rows: [], fatal: `Missing column${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}. The first row must be a header with: email, name, role${opts.needCode ? ", parta_code" : ""}. Found: ${table[0].filter(Boolean).join(", ") || "(nothing)"}.` };
+    return { rows: [], fatal: `Missing column${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}. The first row must be a header with: email, name${opts.needCode ? ", parta_code" : ""} (role is optional). Found: ${table[0].filter(Boolean).join(", ") || "(nothing)"}.` };
   }
 
   const cell = (r: string[], i: number) => (i >= 0 && r[i] !== undefined ? r[i] : "");
@@ -91,7 +92,7 @@ export function mapBulkRows(table: string[][], opts: { needCode: boolean }): Bul
       rowNumber: i + 2,
       email: cell(r, idx.email).trim(),
       name: cell(r, idx.name).trim(),
-      role: cell(r, idx.role).trim(),
+      role: cell(r, idx.role).trim() || DEFAULT_ROLE,
       code: opts.needCode ? cell(r, idx.code).replace(/\r\n/g, "\n") : "",
     });
   });
@@ -104,11 +105,10 @@ export function mapBulkRows(table: string[][], opts: { needCode: boolean }): Bul
 export function validateBulkRows(rows: Array<Omit<BulkRow, "errors">>, needCode: boolean): BulkRow[] {
   const seenEmail = new Map<string, number>();
   return rows.map((r) => {
-    const row: BulkRow = { rowNumber: r.rowNumber, email: String(r.email ?? "").trim(), name: String(r.name ?? "").trim(), role: String(r.role ?? "").trim(), code: needCode ? String(r.code ?? "") : "", errors: [] };
+    const row: BulkRow = { rowNumber: r.rowNumber, email: String(r.email ?? "").trim(), name: String(r.name ?? "").trim(), role: String(r.role ?? "").trim() || DEFAULT_ROLE, code: needCode ? String(r.code ?? "") : "", errors: [] };
     if (!row.email) row.errors.push("email is empty");
     else if (!EMAIL_RE.test(row.email)) row.errors.push("email is not valid");
     if (!row.name) row.errors.push("name is empty");
-    if (!row.role) row.errors.push("role is empty");
     if (needCode) {
       if (!row.code.trim()) row.errors.push("parta_code is empty");
       else if (row.code.length > LIMITS.codeChars) row.errors.push(`parta_code is longer than ${LIMITS.codeChars.toLocaleString()} characters`);

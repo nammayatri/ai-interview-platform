@@ -88,8 +88,8 @@ export function BulkUpload({ templates, emailTemplates, initialTemplateId }: { t
   const copy = (text: string, key: string) => { navigator.clipboard.writeText(text); setCopied(key); setTimeout(() => setCopied(""), 1500); };
   const nameOf = (email: string) => parsed?.rows.find((r) => r.email === email)?.name || "";
 
-  const columns = needCode ? "email, name, role, parta_code" : "email, name, role";
-  const sample = needCode ? SAMPLE_CSV : "email,name,role\nasha@example.com,Asha Rao,SDE\nravi@example.com,Ravi Kumar,SDE\n";
+  const columns = needCode ? "email, name, parta_code (role is optional)" : "email, name (role is optional)";
+  const sample = needCode ? SAMPLE_CSV : "email,name\nasha@example.com,Asha Rao\nravi@example.com,Ravi Kumar\n";
 
   // ── Results ──
   if (result) {

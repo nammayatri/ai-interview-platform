@@ -75,9 +75,13 @@ export default function Proctoring({ videoRef, interviewId, enabled, onAlert, to
         phone_detected: 60000,
         fullscreen_exit: 30000,  // 30s — OS popups can kick fullscreen repeatedly
         window_blur: 30000,      // 30s cooldown
+        left_screen: 1,          // every departure is reported
         virtual_camera: 300000,
+        copy_attempt: 20000,
+        paste_attempt: 20000,
+        screenshot_attempt: 10000,
       };
-      const cooldown = cooldowns[type] || 5000;
+      const cooldown = cooldowns[type] ?? 5000;
       const lastTime = lastAlertTimeRef.current[type] || 0;
       if (now - lastTime < cooldown) return;
       lastAlertTimeRef.current[type] = now;
@@ -116,88 +120,129 @@ export default function Proctoring({ videoRef, interviewId, enabled, onAlert, to
     return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, [enabled, alert]);
 
-  // Window focus loss detection — only counts sustained loss (>2s) to avoid OS notification false positives
+  // Leaving the interview screen (another tab, another app, minimised window). A browser cannot lock the screen or
+  // stop Alt-Tab, so every departure longer than a moment is recorded as "left_screen" with how long it lasted and is
+  // reported to the reviewer as possible plagiarism. The page is covered while away and a notice shows on return.
   useEffect(() => {
     if (!enabled) return;
-    let blurStart = 0;
-    let lastAlert = 0;
-    let shortBlurCount = 0;
-    let shortBlurResetTimer: NodeJS.Timeout | null = null;
-    let pollLostStart = 0; // tracks sustained focus loss across polls
+    const MIN_AWAY_MS = 1500; // shorter than this is an OS notification or a click on the screen-share bar
+    let awayStart = 0;
+    let coverTimer: ReturnType<typeof setTimeout> | null = null;
+    const cover = document.createElement("div");
+    cover.style.cssText = "position:fixed;inset:0;background:#0b0b10;z-index:2147483646;display:none;align-items:center;justify-content:center;flex-direction:column;gap:8px;color:#fff;font:15px sans-serif;text-align:center;padding:24px";
+    document.body.appendChild(cover);
+    const show = (html: string) => { cover.innerHTML = html; cover.style.display = "flex"; };
 
-    const fireAlert = (duration: number) => {
-      const now = Date.now();
-      if (now - lastAlert < 10000) return; // 10s global debounce (was 5s)
-      lastAlert = now;
-      if (duration > 15000) {
-        alert("window_blur", "flag", `You switched away from the interview for ${Math.round(duration / 1000)} seconds — please stay focused`);
+    const leave = () => {
+      if (awayStart) return;
+      awayStart = Date.now();
+      show("<div style='font-size:18px;font-weight:600'>Return to the interview</div><div style='opacity:.8'>Leaving this screen is recorded and reported to the reviewer.</div>");
+    };
+    const back = () => {
+      if (!awayStart) return;
+      const ms = Date.now() - awayStart;
+      awayStart = 0;
+      if (ms >= MIN_AWAY_MS) {
+        const secs = Math.max(1, Math.round(ms / 1000));
+        alert("left_screen", "flag", `Left the interview screen for ${secs} s (switched tab or app). Reported as possible plagiarism.`);
+        show("<div style='font-size:18px;font-weight:600;color:#fca5a5'>You left the interview screen</div><div style='opacity:.85'>This has been recorded and will be reported to the reviewer. Please stay on this screen.</div>");
+        if (coverTimer) clearTimeout(coverTimer);
+        coverTimer = setTimeout(() => { cover.style.display = "none"; }, 4000);
       } else {
-        alert("window_blur", "flag", "Frequent tab switching detected — please stay on the interview page");
+        cover.style.display = "none";
       }
     };
 
-    const handleBlur = () => { blurStart = Date.now(); };
-    const handleFocus = () => {
-      if (!blurStart) return;
-      const duration = Date.now() - blurStart;
-      blurStart = 0;
-      // Flag sustained loss >5s
-      if (duration > 5000) {
-        fireAlert(duration);
-      } else {
-        // Short blur — track frequency. 3+ short blurs in 60s = suspicious
-        shortBlurCount++;
-        if (shortBlurResetTimer) clearTimeout(shortBlurResetTimer);
-        shortBlurResetTimer = setTimeout(() => { shortBlurCount = 0; }, 60000);
-        if (shortBlurCount >= 3) {
-          fireAlert(duration);
-          shortBlurCount = 0;
-        }
-      }
-    };
-
-    // Visibility change for tab switches (these are always intentional)
-    const handleVisibility = () => {
-      if (document.hidden) {
-        blurStart = Date.now();
-      } else if (blurStart) {
-        const duration = Date.now() - blurStart;
-        blurStart = 0;
-        if (duration > 5000) fireAlert(duration);
-      }
-    };
-
-    window.addEventListener("blur", handleBlur);
-    window.addEventListener("focus", handleFocus);
-    document.addEventListener("visibilitychange", handleVisibility);
-
-    // Periodic focus poll — catches tab/window switches blur/visibility miss.
-    // Now requires SUSTAINED loss (≥10s) before firing, not just one missed poll.
-    const focusPoll = setInterval(() => {
-      if (!document.hasFocus()) {
-        if (!pollLostStart) {
-          pollLostStart = Date.now();
-        } else if (Date.now() - pollLostStart > 10000) {
-          // 10s of sustained focus loss confirmed by polling
-          fireAlert(Date.now() - pollLostStart);
-          pollLostStart = 0;
-        }
-      } else {
-        pollLostStart = 0;
-      }
-    }, 5000);
+    const onBlur = () => leave();
+    const onFocus = () => back();
+    const onVisibility = () => { if (document.hidden) leave(); else if (document.hasFocus()) back(); };
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    // Catches switches that fire no event (some OS shortcuts): focus is lost but blur never arrived.
+    const poll = setInterval(() => { if (!document.hasFocus()) leave(); else back(); }, 1000);
 
     return () => {
-      window.removeEventListener("blur", handleBlur);
-      window.removeEventListener("focus", handleFocus);
-      document.removeEventListener("visibilitychange", handleVisibility);
-      clearInterval(focusPoll);
-      if (shortBlurResetTimer) clearTimeout(shortBlurResetTimer);
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+      clearInterval(poll);
+      if (coverTimer) clearTimeout(coverTimer);
+      cover.remove();
     };
   }, [enabled, alert]);
 
-  // Copy/paste blocking REMOVED — candidates can now type messages in the
-  // chat input and need to paste code/text. Keyboard shortcuts allowed.
+  // Content protection: the problem, the AI's messages and any displayed code cannot be copied out.
+  // Typing/pasting into the candidate's own input boxes stays allowed (pasting into the DSA scratchpad
+  // is blocked in that component). A browser cannot truly stop OS screenshots; we detect the usual
+  // shortcuts, hide the page briefly, and flag them. The watermark on the page identifies leaks.
+  useEffect(() => {
+    if (!enabled) return;
+    const inEditable = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null;
+      return !!el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable);
+    };
+    const blockCopy = (e: ClipboardEvent) => {
+      if (inEditable(e.target)) return;
+      e.preventDefault();
+      alert("copy_attempt", "flag", "Copying interview content is not allowed");
+    };
+    const blockSelect = (e: Event) => { if (!inEditable(e.target)) e.preventDefault(); };
+    const onScratchPaste = () => alert("paste_attempt", "flag", "Tried to paste into the code area");
+    let hideTimer: ReturnType<typeof setTimeout> | null = null;
+    const cover = document.createElement("div");
+    cover.style.cssText = "position:fixed;inset:0;background:#000;z-index:2147483647;display:none;align-items:center;justify-content:center;color:#fff;font:14px sans-serif";
+    cover.textContent = "Screenshots are not allowed during the interview";
+    document.body.appendChild(cover);
+    const flashCover = () => {
+      cover.style.display = "flex";
+      if (hideTimer) clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => { cover.style.display = "none"; }, 2500);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      const mac = (e.metaKey && e.shiftKey && ["3", "4", "5", "#", "$", "%"].includes(e.key));
+      const win = e.key === "PrintScreen" || (e.metaKey && e.shiftKey && (e.key === "s" || e.key === "S"));
+      if (mac || win) {
+        e.preventDefault();
+        flashCover();
+        try { navigator.clipboard?.writeText(""); } catch {}
+        alert("screenshot_attempt", "flag", "Screenshots are not allowed during the interview");
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => { if (e.key === "PrintScreen") { flashCover(); try { navigator.clipboard?.writeText(""); } catch {} } };
+    document.addEventListener("copy", blockCopy);
+    document.addEventListener("cut", blockCopy);
+    document.addEventListener("selectstart", blockSelect);
+    document.addEventListener("dragstart", blockSelect);
+    document.addEventListener("keydown", onKey, true);
+    document.addEventListener("keyup", onKeyUp, true);
+    const onScratchCopy = () => alert("copy_attempt", "flag", "Tried to copy from the code area");
+    window.addEventListener("scratchpad-paste-blocked", onScratchPaste);
+    window.addEventListener("scratchpad-copy-blocked", onScratchCopy);
+    return () => {
+      document.removeEventListener("copy", blockCopy);
+      document.removeEventListener("cut", blockCopy);
+      document.removeEventListener("selectstart", blockSelect);
+      document.removeEventListener("dragstart", blockSelect);
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("keyup", onKeyUp, true);
+      window.removeEventListener("scratchpad-paste-blocked", onScratchPaste);
+      window.removeEventListener("scratchpad-copy-blocked", onScratchCopy);
+      if (hideTimer) clearTimeout(hideTimer);
+      cover.remove();
+    };
+  }, [enabled, alert]);
+
+  // Faint repeating watermark so any photographed screen can be traced to this interview.
+  useEffect(() => {
+    if (!enabled) return;
+    const mark = document.createElement("div");
+    const label = `ID ${interviewId.slice(0, 8)}`;
+    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='260' height='160'><text x='20' y='90' transform='rotate(-25 130 80)' fill='white' fill-opacity='0.06' font-size='16' font-family='sans-serif'>${label}</text></svg>`;
+    mark.style.cssText = `position:fixed;inset:0;pointer-events:none;z-index:2147483000;background-image:url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}")`;
+    document.body.appendChild(mark);
+    return () => mark.remove();
+  }, [enabled, interviewId]);
 
   // Second monitor / extended display detection
   useEffect(() => {
