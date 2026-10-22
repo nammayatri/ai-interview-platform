@@ -122,3 +122,43 @@ export function validateBulkRows(rows: Array<Omit<BulkRow, "errors">>, needCode:
   });
 }
 
+
+// ─── Batch invitations: a list of candidate emails (name optional) ───────────
+
+export const MAX_INVITE_ROWS = 500;
+
+export interface InviteRow { rowNumber: number; email: string; name: string; errors: string[] }
+
+/** Reads a candidate list for a batch. Only an email column is needed; name is optional. */
+export function mapInviteRows(table: string[][]): { rows: InviteRow[]; fatal?: string } {
+  if (table.length === 0) return { rows: [], fatal: "The file is empty." };
+  const header = table[0].map(norm);
+  const find = (k: "email" | "name") => header.findIndex((h) => ALIASES[k].includes(h));
+  const emailCol = find("email");
+  const nameCol = find("name");
+  if (emailCol < 0) return { rows: [], fatal: `Missing the email column. The first row must be a header with: email (name is optional). Found: ${table[0].filter(Boolean).join(", ") || "(nothing)"}.` };
+  const raw: Array<{ rowNumber: number; email: string; name: string }> = [];
+  table.slice(1).forEach((r, i) => {
+    if (r.every((c) => String(c ?? "").trim() === "")) return;
+    raw.push({ rowNumber: i + 2, email: String(r[emailCol] ?? "").trim(), name: nameCol >= 0 ? String(r[nameCol] ?? "").trim() : "" });
+  });
+  if (raw.length === 0) return { rows: [], fatal: "The file has a header but no candidate rows." };
+  if (raw.length > MAX_INVITE_ROWS) return { rows: [], fatal: `The file has ${raw.length} rows. The limit is ${MAX_INVITE_ROWS} per upload; split it into smaller files.` };
+  return { rows: validateInviteRows(raw) };
+}
+
+/** Checks each row and flags duplicate emails. Used on upload and again on the server before anything is saved. */
+export function validateInviteRows(rows: Array<{ rowNumber: number; email: string; name: string }>): InviteRow[] {
+  const seen = new Map<string, number>();
+  return rows.map((r) => {
+    const row: InviteRow = { rowNumber: r.rowNumber, email: String(r.email ?? "").trim(), name: String(r.name ?? "").trim().slice(0, 255), errors: [] };
+    if (!row.email) row.errors.push("email is empty");
+    else if (row.email.length > 320 || !EMAIL_RE.test(row.email)) row.errors.push("email is not valid");
+    const key = row.email.toLowerCase();
+    if (key) {
+      if (seen.has(key)) row.errors.push(`the same email is already on row ${seen.get(key)}`);
+      else seen.set(key, row.rowNumber);
+    }
+    return row;
+  });
+}

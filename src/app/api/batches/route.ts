@@ -5,19 +5,12 @@ import { ANY_ROLE, requireRole } from "@/lib/rbac";
 import { loadStagedInput } from "@/lib/staged-interview";
 import { batchPhase, newJoinCode, readStoredStages, validateBatchInput } from "@/lib/batches";
 import { stagesDuration, type StagePlan } from "@/lib/runbook";
-import { mapBatch } from "@/lib/batches-api";
+import { mapBatch, queryBatches } from "@/lib/batches-api";
 
 export async function GET(req: Request) {
   const auth = await requireRole(req, ANY_ROLE);
   if (auth instanceof NextResponse) return auth;
-  const { rows } = await pool.query(
-    `SELECT b.*,
-       (SELECT count(*) FROM interviews i WHERE i.batch_id = b.id) AS registered,
-       (SELECT count(*) FROM interviews i WHERE i.batch_id = b.id AND i.status <> 'waiting') AS started,
-       (SELECT count(*) FROM interviews i WHERE i.batch_id = b.id AND i.status = 'completed') AS completed
-     FROM interview_batches b WHERE b.org_id = $1 ORDER BY b.starts_at DESC LIMIT 200`,
-    [auth.user.orgId]
-  );
+  const rows = await queryBatches("b.org_id = $1", [auth.user.orgId], "ORDER BY b.starts_at DESC LIMIT 200");
   return NextResponse.json(rows.map((r) => mapBatch(r)));
 }
 

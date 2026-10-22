@@ -15,6 +15,8 @@ export async function GET() {
     // What the browser must send: raw 16 kHz PCM for Voxtral, a WebM/Opus stream for everything else
     sttAudio: (process.env.STT_PROVIDER || "deepgram") === "voxtral" ? "pcm16" : "webm",
     silenceDelayMs: parseInt(process.env.SILENCE_DELAY_MS || "6000"),
+    // ALLOW_MEDIA_TOGGLE=false keeps the microphone and camera on for the whole interview: the Mute and Stop Video buttons are removed.
+    allowMediaToggle: (process.env.ALLOW_MEDIA_TOGGLE || "true").toLowerCase() !== "false",
     // Voice mode. AUTO_VOICE_ENABLED=false removes the Auto option, so every interview is manual (Ctrl+M to speak, Ctrl+M to send).
     // DEFAULT_VOICE_MODE (manual | auto) is what a candidate starts on. The puzzle round is always manual.
     autoVoiceEnabled: (process.env.AUTO_VOICE_ENABLED || "true").toLowerCase() !== "false",

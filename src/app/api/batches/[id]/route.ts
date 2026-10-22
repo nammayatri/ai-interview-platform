@@ -4,17 +4,11 @@ import { isUuid } from "@/lib/content-api";
 import { ANY_ROLE, requireRole } from "@/lib/rbac";
 import { interviewExpiry, MAX_LATE_ENTRY_MIN, MAX_OPENS_BEFORE_MIN, MAX_BATCH_CANDIDATES } from "@/lib/batches";
 import { stagesDuration } from "@/lib/runbook";
-import { mapBatch } from "@/lib/batches-api";
+import { mapBatch, queryBatches } from "@/lib/batches-api";
+import { listInvites } from "@/lib/batch-invites";
 
 async function loadBatch(id: string, orgId: string) {
-  const { rows } = await pool.query(
-    `SELECT b.*,
-       (SELECT count(*) FROM interviews i WHERE i.batch_id = b.id) AS registered,
-       (SELECT count(*) FROM interviews i WHERE i.batch_id = b.id AND i.status <> 'waiting') AS started,
-       (SELECT count(*) FROM interviews i WHERE i.batch_id = b.id AND i.status = 'completed') AS completed
-     FROM interview_batches b WHERE b.id = $1 AND b.org_id = $2`,
-    [id, orgId]
-  );
+  const rows = await queryBatches("b.id = $1 AND b.org_id = $2", [id, orgId]);
   return rows[0] || null;
 }
 
@@ -34,8 +28,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
      FROM interviews i WHERE i.batch_id = $1 ORDER BY i.created_at DESC LIMIT 5000`,
     [id]
   );
+  let invites: Awaited<ReturnType<typeof listInvites>> = [];
+  try { invites = await listInvites(id); } catch (err: any) { if (err?.code !== "42P01") throw err; } // migration 007 not applied yet
   return NextResponse.json({
     ...mapBatch(b),
+    invites,
     candidates: rows.map((r) => ({
       id: r.id,
       name: r.candidate_name || "",
@@ -97,6 +94,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   }
   let isClosed: boolean = current.is_closed;
   if (body.isClosed !== undefined) isClosed = body.isClosed === true;
+  const archiveChange = body.isArchived !== undefined ? body.isArchived === true : null;
   if (errors.length) return NextResponse.json({ error: errors[0], errors }, { status: 400 });
 
   const duration = stagesDuration(current.stages || []);
@@ -112,6 +110,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       interviewExpiry({ startsAt, lateEntryMin }, duration).toISOString(),
       id,
     ]);
+    if (archiveChange !== null) await client.query("UPDATE interview_batches SET is_archived = $1 WHERE id = $2", [archiveChange, id]);
     await client.query("COMMIT");
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});

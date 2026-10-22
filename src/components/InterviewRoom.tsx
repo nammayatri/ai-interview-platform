@@ -246,6 +246,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     sttAudio: "webm" as "webm" | "pcm16",
     silenceDelayMs: 6000,
     autoVoiceEnabled: true,
+    allowMediaToggle: true,
   });
   useEffect(() => {
     fetch("/api/config").then(r => r.json()).then(cfg => {
@@ -2099,6 +2100,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       {/* Bottom Controls */}
       <div className="flex items-center justify-center gap-2 sm:gap-4 py-3 sm:py-4 flex-wrap">
         {/* Main: speak + mic + camera */}
+        {(manualVoice || runtimeConfig.allowMediaToggle) && (
         <div className="flex items-center gap-2 rounded-full border border-white/10 bg-zinc-900/60 p-1.5">
         {manualVoice && (
           <button
@@ -2121,6 +2123,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
             <kbd className="hidden rounded bg-black/25 px-1.5 py-0.5 text-[10px] font-medium sm:inline">Ctrl+M</kbd>
           </button>
         )}
+        {runtimeConfig.allowMediaToggle && (<>
         <ControlButton
           active={micEnabled}
           onClick={toggleMic}
@@ -2145,7 +2148,9 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
           }
           label={cameraEnabled ? "Stop Video" : "Start Video"}
         />
+        </>)}
         </div>
+        )}
         {/* Voice settings: quieter, secondary */}
         <div className="flex items-center gap-2">
         {/* Voice mode switch: Auto (AI replies after you pause) ⇄ Manual (you start/stop with the mic or Ctrl+M) */}

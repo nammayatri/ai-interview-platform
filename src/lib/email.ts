@@ -148,3 +148,53 @@ export async function sendCustomEmail(
 
   await sendMail(to, subject, html);
 }
+
+export const isEmailConfigured = () => !!transporter;
+
+/** Throws when the email could not be delivered (including when SMTP is not configured), so the caller can record the failure. */
+export async function sendBatchInvite(opts: {
+  to: string;
+  name: string;
+  batchName: string;
+  joinUrl: string;
+  startsAt: Date;
+  opensAt: Date;
+  closesAt: Date;
+  durationMin: number;
+  orgName?: string;
+}) {
+  if (!transporter) throw new Error("Email is not configured on the server (SMTP settings are missing).");
+  const tz = process.env.EMAIL_TIME_ZONE || "Asia/Kolkata";
+  const fmt = (d: Date) => new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeStyle: "short", timeZone: tz, hour12: true }).format(d) + ` (${tz})`;
+  const row = (label: string, value: string) => `
+        <tr>
+          <td style="padding:6px 0;color:#6b7280">${label}</td>
+          <td style="padding:6px 0;text-align:right;font-weight:600;color:#111827">${escapeHtml(value)}</td>
+        </tr>`;
+  const html = wrapHtml(`
+    <h1 style="margin:0 0 16px;font-size:24px;font-weight:700;color:#111827">You're invited: ${escapeHtml(opts.batchName)}</h1>
+    <p style="color:#4b5563;font-size:15px;line-height:1.6;margin:0 0 24px">
+      Hi ${escapeHtml(opts.name || "there")}, you have been invited to an AI-powered interview. Use the link below on the day; you will be asked for your email address, so use <strong>${escapeHtml(opts.to)}</strong>.
+    </p>
+    <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin:0 0 24px">
+      <table style="width:100%;color:#374151;font-size:14px" cellpadding="0" cellspacing="0">
+        ${row("Login opens", fmt(opts.opensAt))}
+        ${row("Test starts", fmt(opts.startsAt))}
+        ${row("Entry closes", fmt(opts.closesAt))}
+        ${row("Duration", `${opts.durationMin} minutes`)}
+      </table>
+    </div>
+    <div style="text-align:center;margin:0 0 24px">
+      <a href="${escapeHtml(opts.joinUrl)}" style="display:inline-block;background:#4f46e5;color:white;font-weight:600;font-size:15px;padding:14px 40px;border-radius:8px;text-decoration:none">
+        Open the interview link
+      </a>
+    </div>
+    <div style="background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;margin:0 0 16px">
+      <p style="color:#92400e;font-size:13px;margin:0;line-height:1.5">
+        <strong>Before you start:</strong> use a quiet room, a working camera and microphone, and a stable connection. You will be asked to share your entire screen. The interview is recorded. You can log in from the time shown above; the test starts at the start time.
+      </p>
+    </div>
+  `, opts.orgName);
+  await transporter.sendMail({ from: fromAddress, to: opts.to, subject: `Interview invitation: ${opts.batchName}`, html });
+  console.log(`[Email] Batch invite sent to ${opts.to}`);
+}
