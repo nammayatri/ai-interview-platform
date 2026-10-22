@@ -11,6 +11,7 @@ export const config = {
     "/",
     "/new",
     "/dashboard/:path*",
+    "/interviews/:path*",
     "/review/:path*",
     "/problems/:path*",
     "/puzzles/:path*",

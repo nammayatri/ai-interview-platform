@@ -25,7 +25,7 @@ export default function LoginPage() {
       setError(result.error.includes("INACTIVE") ? "Your account is pending admin approval. Please contact your organization admin to activate your account." : "Invalid email or password");
       setLoading(false);
     } else {
-      window.location.href = "/";
+      window.location.href = "/batches";
     }
   };
 

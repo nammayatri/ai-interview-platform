@@ -670,7 +670,7 @@ export default function InterviewDetailPage({ params }: { params: { id: string }
           setShowDeleteConfirm(false);
           try {
             const res = await fetch(`/api/interview/${interview.id}`, { method: "DELETE" });
-            if (res.ok) window.location.href = "/";
+            if (res.ok) window.location.href = "/interviews";
           } catch {}
         }}
         onCancel={() => setShowDeleteConfirm(false)}

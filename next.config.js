@@ -6,6 +6,10 @@ const nextConfig = {
     // @aws-sdk require that the bundler cannot resolve. Only the bulk-upload .xlsx reader uses them.
     serverComponentsExternalPackages: ['@deepgram/sdk', 'read-excel-file', 'unzipper'],
   },
+  // The site opens on Interview Batches. (The interviews dashboard is at /interviews.)
+  async redirects() {
+    return [{ source: "/", destination: "/batches", permanent: false }];
+  },
   async headers() {
     return [{
       source: "/:path*",
