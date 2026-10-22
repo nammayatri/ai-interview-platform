@@ -205,8 +205,8 @@ export default function ComparePage() {
       result = result.filter(
         (i) =>
           (i.candidateName || "").toLowerCase().includes(q) ||
-          i.candidateEmail.toLowerCase().includes(q) ||
-          i.role.toLowerCase().includes(q)
+          (i.candidateEmail || "").toLowerCase().includes(q) ||
+          (i.role || "").toLowerCase().includes(q)
       );
     }
 

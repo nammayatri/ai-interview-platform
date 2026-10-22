@@ -107,3 +107,29 @@ describe("salvagePhaseScorecard (a reply that is not valid JSON)", () => {
     expect(normalizePhaseScorecard(parseScorecardJSON(ok), rubric, false).criteria![0].credit).toBe("met");
   });
 });
+
+describe("puzzle stage results", () => {
+  const rubric = [{ id: "p1", text: "t", weight: 1, mapsTo: "problemSolving" as const }];
+  const raw = {
+    criteria: [{ id: "p1", credit: "met", evidence: "" }],
+    stages: [
+      { label: "Stage 1: one bottle, one round", correctAnswer: "10 testers, binary", answer: "10 testers, binary numbering", explanation: "2^10 covers 1000", verdict: "correct", help: "no hints" },
+      { label: "Stage 2: two rounds", answer: "still 10", verdict: "weird", help: "after hint 2" },
+      { label: "Stage 3: two poisoned bottles", answer: "made up", verdict: "not_reached", help: "" },
+      { label: "", answer: "dropped", verdict: "correct", help: "" },
+    ],
+    furthestStage: "Stage 2: two rounds",
+  };
+  it("keeps the answer and verdict of each stage and the furthest stage", () => {
+    const r = normalizePhaseScorecard(raw, rubric, true);
+    expect(r.furthestStage).toBe("Stage 2: two rounds");
+    expect(r.stages).toHaveLength(3); // the unlabeled one is dropped
+    expect(r.stages![0]).toMatchObject({ verdict: "correct", correctAnswer: "10 testers, binary", answer: "10 testers, binary numbering", explanation: "2^10 covers 1000", help: "no hints" });
+    expect(r.stages![1].verdict).toBe("incorrect"); // unknown verdicts never count as correct
+    expect(r.stages![2]).toMatchObject({ verdict: "not_reached", answer: "", explanation: "" }); // nothing is shown as an answer for a stage not reached
+  });
+  it("ignores stages outside a puzzle and tolerates their absence", () => {
+    expect(normalizePhaseScorecard(raw, rubric, false).stages).toBeUndefined();
+    expect(normalizePhaseScorecard({ criteria: [] }, rubric, true).stages).toBeUndefined();
+  });
+});

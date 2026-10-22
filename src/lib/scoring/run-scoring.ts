@@ -8,7 +8,7 @@ import { calculateOverall, calculateRecommendation, type DimKey, type DimScores 
 import type { Interview } from "../store";
 import { getPhases } from "../phase-store";
 import { describePhase, scorePhase, toRollupInput, type PhaseScorecard } from "./phase-scoring";
-import { rollupDimensions } from "./rollup";
+import { puzzleOnlyNotAssessed, rollupDimensions } from "./rollup";
 
 /**
  * Final scoring, in order:
@@ -22,12 +22,13 @@ export async function buildScorecard(interview: Interview): Promise<ReturnType<t
   const isDsa = interview.roundType === "DSA Review";
 
   const phaseResult = isDsa ? await scoreCompletedPhases(interview) : null;
-  // A puzzle-only interview never asks for code, so technical depth and domain knowledge are not assessed at all.
-  const notAssessed: DimKey[] = phaseResult && !phaseResult.ranCoding && phaseResult.described.length > 0 ? ["technicalDepth", "domainKnowledge"] : [];
+  // A puzzle-only interview never asks for code, so technical depth and domain knowledge are not assessed at all. Neither
+  // is any other dimension the puzzle's rubric does not score (a problem-solving-only puzzle ignores communication and culture fit).
+  const notAssessed: DimKey[] = phaseResult && !phaseResult.ranCoding && phaseResult.described.length > 0 ? puzzleOnlyNotAssessed(phaseResult.inputs) : [];
   const stageText = phaseResult
     ? formatStageResults(phaseResult.described, phaseResult.skipped) +
       (notAssessed.length
-        ? "\n\nSCOPE NOTE: this interview was a reasoning puzzle only. Technical depth (code, data structures, tools) and domain knowledge were NOT part of it. Do not list missing code, complexity analysis or tooling as weaknesses or as 'not tested' gaps, and do not lower any score for them. Judge the candidate on the puzzle: how far they got, the reasoning, the hints they needed and how they communicated."
+        ? "\n\nSCOPE NOTE: this interview was a reasoning puzzle only. Technical depth (code, data structures, tools) and domain knowledge were NOT part of it. Do not list missing code, complexity analysis or tooling as weaknesses or as 'not tested' gaps, and do not lower any score for them. Judge the candidate on the puzzle: how far they got, the reasoning and the hints they needed." + (notAssessed.includes("communication") ? " Communication and culture fit are not scored for this puzzle either; do not comment on them." : "")
         : "")
     : undefined;
   const parsed = parseScorecardJSON(await generateScorecard(interview, stageText));
@@ -61,8 +62,11 @@ export function formatStageResults(described: ReturnType<typeof describePhase>[]
   const lines = described.map((p, i) => {
     if (p.score === null) return `STAGE ${i + 1}: ${label(p.key)} "${p.title}": not scored (${(p as any).skipReason || "too little to score"}).`;
     const hints = p.hintsUsed.length ? p.hintsUsed.map((h) => `hint ${h.order} at minute ${h.atMin}`).join(", ") : "none";
+    const stageLines = (p as any).stages?.length
+      ? `\n  Stage by stage (furthest: ${(p as any).furthestStage || "n/a"}):\n` + (p as any).stages.map((x: any) => `  - ${x.label}: ${x.verdict.replace("_", " ")}${x.answer ? `, answered: ${x.answer}` : ""}${x.explanation ? `, explained: ${x.explanation}` : ""}${x.help ? ` (${x.help})` : ""}`).join("\n")
+      : "";
     const criteria = p.criteria.map((c) => `  - [${c.credit}] ${c.text}${c.evidence ? ` (evidence: ${c.evidence})` : ""}`).join("\n");
-    return `STAGE ${i + 1}: ${label(p.key)} "${p.title}": score ${p.score}/5 after hint discount, ${p.durationMin} min, weak answers ${p.weakAnswers}, hints used: ${hints}${p.finalAnswerCorrect !== undefined ? `, final answer ${p.finalAnswerCorrect ? "correct" : "not correct"}` : ""}.\n${criteria}\n  Assessor notes: ${p.notes || "none"}`;
+    return `STAGE ${i + 1}: ${label(p.key)} "${p.title}": score ${p.score}/5 after hint discount, ${p.durationMin} min, weak answers ${p.weakAnswers}, hints used: ${hints}${p.finalAnswerCorrect !== undefined ? `, final answer ${p.finalAnswerCorrect ? "correct" : "not correct"}` : ""}.${stageLines}\n${criteria}\n  Assessor notes: ${p.notes || "none"}`;
   });
   const skip = skipped.map((s) => `NOT RUN: ${label(s.key)} (${s.reason})`);
   return [...lines, ...skip].join("\n\n");

@@ -19,6 +19,8 @@ export interface ScorecardPhase {
   hintsUsed: Array<{ order: number; atMin: number; text: string }>;
   weakAnswers: number;
   finalAnswerCorrect?: boolean;
+  stages?: Array<{ label: string; correctAnswer?: string; answer: string; explanation?: string; verdict: "correct" | "partial" | "incorrect" | "not_reached"; help: string }>;
+  furthestStage?: string;
   notes: string;
 }
 
@@ -39,6 +41,14 @@ const CREDIT_STYLE: Record<string, string> = {
   partial: "bg-amber-50 text-amber-700 border-amber-200",
   missed: "bg-red-50 text-red-700 border-red-200",
 };
+
+const STAGE_STYLE: Record<string, string> = {
+  correct: CREDIT_STYLE.met,
+  partial: CREDIT_STYLE.partial,
+  incorrect: CREDIT_STYLE.missed,
+  not_reached: "bg-gray-100 text-gray-500 border-gray-200",
+};
+const STAGE_LABEL: Record<string, string> = { correct: "correct", partial: "partly right", incorrect: "incorrect", not_reached: "not done" };
 
 const minutes = (a: string | null, b: string | null) => (a && b ? Math.round(((new Date(b).getTime() - new Date(a).getTime()) / 60000) * 10) / 10 : null);
 
@@ -118,6 +128,33 @@ export function ReviewPhases({ phases, dimensionSources, interviewPhases, submis
             <span>Hints used: <strong>{p.hintsUsed.length}</strong></span>
             {p.finalAnswerCorrect !== undefined && <span>Final answer: <strong>{p.finalAnswerCorrect ? "correct" : "not correct"}</strong></span>}
           </div>
+
+          {p.stages && p.stages.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Stage by stage</h3>
+                {p.furthestStage && <span className="text-xs text-gray-700">Furthest stage reached: <strong>{p.furthestStage}</strong></span>}
+              </div>
+              {p.stages.map((st, i) => (
+                <div key={i} className={`rounded-lg border p-3 ${st.verdict === "not_reached" ? "border-gray-100 bg-gray-50" : "border-gray-200"}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-sm font-medium text-gray-900">{st.label}</p>
+                    <span className={`shrink-0 text-[11px] font-medium px-2 py-0.5 rounded-full border ${STAGE_STYLE[st.verdict]}`}>{STAGE_LABEL[st.verdict]}</span>
+                  </div>
+                  {st.correctAnswer && <p className="mt-1 text-sm text-gray-700"><span className="text-gray-400">Correct answer: </span>{st.correctAnswer}</p>}
+                  {st.verdict === "not_reached" ? (
+                    <p className="mt-1 text-sm text-gray-500">Not done: the interview did not get to this stage.</p>
+                  ) : (
+                    <>
+                      <p className="mt-1 text-sm text-gray-900"><span className="text-gray-400">Candidate's answer: </span>{st.answer || "No clear answer"}</p>
+                      {st.explanation && <p className="mt-1 text-sm text-gray-700"><span className="text-gray-400">Their explanation: </span>{st.explanation}</p>}
+                      {st.help && <p className="mt-0.5 text-[11px] text-gray-500">{st.help}</p>}
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
 
           {p.hintsUsed.length > 0 && (
             <ul className="space-y-1.5">

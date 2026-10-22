@@ -1,4 +1,5 @@
 import { pool } from "./db";
+import { stripNul } from "./text-clean";
 import type { PhaseRow } from "./phase-engine";
 import { getPhases, getSubmissions, type Submission } from "./phase-store";
 
@@ -76,11 +77,11 @@ export async function saveInterview(
        browser_fingerprint = COALESCE(EXCLUDED.browser_fingerprint, interviews.browser_fingerprint)`,
     [
       interview.id,
-      interview.resume,
-      interview.resumeFileName,
-      interview.candidateEmail,
-      interview.candidateName || null,
-      interview.candidatePhone || null,
+      stripNul(interview.resume),
+      stripNul(interview.resumeFileName),
+      stripNul(interview.candidateEmail),
+      stripNul(interview.candidateName) || null,
+      stripNul(interview.candidatePhone) || null,
       interview.token,
       interview.browserFingerprint,
       interview.role,
@@ -112,7 +113,7 @@ export async function getInterview(id: string): Promise<Interview | null> {
   const interview: Interview = {
     id: row.id,
     resume: row.resume,
-    resumeFileName: row.resume_file_name,
+    resumeFileName: row.resume_file_name || "",
     candidateEmail: row.candidate_email || "",
     candidateName: row.candidate_name || "",
     candidatePhone: row.candidate_phone || "",
@@ -150,7 +151,7 @@ export async function getInterviewWithPhotos(id: string): Promise<Interview | nu
   const interview: Interview = {
     id: row.id,
     resume: row.resume,
-    resumeFileName: row.resume_file_name,
+    resumeFileName: row.resume_file_name || "",
     candidateEmail: row.candidate_email || "",
     candidateName: row.candidate_name || "",
     candidatePhone: row.candidate_phone || "",
@@ -307,7 +308,7 @@ export async function getAllInterviews(orgId?: string): Promise<Omit<Interview, 
   return rows.map((row) => ({
     id: row.id,
     resume: "",
-    resumeFileName: row.resume_file_name,
+    resumeFileName: row.resume_file_name || "",
     candidateEmail: row.candidate_email || "",
     candidateName: row.candidate_name || "",
     candidatePhone: row.candidate_phone || "",

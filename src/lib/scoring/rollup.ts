@@ -60,6 +60,17 @@ export function dimFraction(p: RollupPhaseInput, dim: Dimension): number | null 
   return Math.max(0, f - hintDiscount(p.hintsUsed, p.hintLadder));
 }
 
+/**
+ * Dimensions a puzzle-only interview leaves out. Only the dimensions the puzzle's rubric scores count, so a puzzle that
+ * grades problem solving alone is judged on that alone; communication and culture fit are then "not assessed". Code
+ * and domain knowledge are never covered by a puzzle. If nothing is covered, only those two are left out.
+ */
+export function puzzleOnlyNotAssessed(phases: RollupPhaseInput[]): Dimension[] {
+  const covered = DIMENSIONS.filter((d) => phases.some((p) => dimFraction(p, d) !== null));
+  if (covered.length === 0) return ["technicalDepth", "domainKnowledge"];
+  return DIMENSIONS.filter((d) => !covered.includes(d));
+}
+
 export interface RollupResult {
   /** Dimension value on the 1..5 scale for dimensions that have rubric coverage; absent otherwise. */
   scores: Partial<Record<Dimension, number>>;

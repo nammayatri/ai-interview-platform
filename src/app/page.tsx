@@ -347,10 +347,10 @@ export default function DashboardPage() {
       const q = search.toLowerCase();
       result = result.filter(
         (i) =>
-          ((i as any).candidateName || "").toLowerCase().includes(q) ||
-          i.candidateEmail.toLowerCase().includes(q) ||
-          i.role.toLowerCase().includes(q) ||
-          i.resumeFileName.toLowerCase().includes(q)
+          (i.candidateName || "").toLowerCase().includes(q) ||
+          (i.candidateEmail || "").toLowerCase().includes(q) ||
+          (i.role || "").toLowerCase().includes(q) ||
+          (i.resumeFileName || "").toLowerCase().includes(q)
       );
     }
 

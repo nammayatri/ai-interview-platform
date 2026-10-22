@@ -1,5 +1,6 @@
 // Reads a candidate's resume file (PDF, DOCX or TXT) into text for the interviewer prompt.
 import mammoth from "mammoth";
+import { stripNul } from "./text-clean";
 
 export const MAX_RESUME_BYTES = 10 * 1024 * 1024;
 const ALLOWED_TYPES = ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain"];
@@ -34,5 +35,5 @@ export async function readResume(file: File): Promise<{ text: string; fileName: 
     }
   } else text = buffer.toString("utf-8");
   // A resume longer than this adds cost to every turn and nothing the interviewer can use.
-  return { text: text.slice(0, 20_000), fileName: file.name.slice(0, 255) };
+  return { text: stripNul(text).slice(0, 20_000), fileName: stripNul(file.name).slice(0, 255) };
 }

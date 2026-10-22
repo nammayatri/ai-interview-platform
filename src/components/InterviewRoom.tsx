@@ -235,6 +235,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   const [expired, setExpired] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [aiError, setAiError] = useState(false);
+  const [aiStalled, setAiStalled] = useState(false); // the AI has not replied to the candidate's last message
   const lastTranscriptRef = useRef<TranscriptEntry[]>([]);
 
   // Runtime config from /api/config — avoids NEXT_PUBLIC_* build-time baking
@@ -277,6 +278,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const isProcessingRef = useRef(false);
+  const processingSinceRef = useRef(0);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const isEndingRef = useRef(false);
   const isAISpeakingRef = useRef(false);
@@ -760,6 +762,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       }
       if (isEndingRef.current) return;
       isProcessingRef.current = true;
+      processingSinceRef.current = Date.now();
       queuedEntriesRef.current = [];
       setIsAIThinking(true);
       setAiError(false);
@@ -992,6 +995,36 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       return updated;
     });
   }, [chatInput, isAIThinking, getAIResponse]);
+
+  // Stalled AI: the candidate's message is the last thing in the chat and no reply is coming (a failed or empty
+  // response, a dropped connection), or a request has been running for 45s with nothing playing. The candidate gets a Nudge button.
+  useEffect(() => {
+    if (!isStarted) return;
+    const check = setInterval(() => {
+      if (isEndingRef.current) { setAiStalled(false); return; }
+      const last = transcriptRef.current[transcriptRef.current.length - 1];
+      const now = Date.now();
+      const unanswered = last?.role === "candidate" && !isProcessingRef.current && !isAISpeakingRef.current && now - lastActivityRef.current > 15000 && now >= pauseUntilRef.current;
+      const slow = isProcessingRef.current && !isAISpeakingRef.current && now - processingSinceRef.current > 45000;
+      setAiStalled(unanswered || slow);
+    }, 3000);
+    return () => clearInterval(check);
+  }, [isStarted]);
+
+  // Candidate-side nudge: drop whatever request is stuck and ask the AI to answer the conversation as it stands.
+  const nudgeAI = useCallback(() => {
+    if (isEndingRef.current) return;
+    setAiStalled(false);
+    setAiError(false);
+    activeAbortRef.current?.abort();
+    generationRef.current++; // the aborted request must not reset the state of the new one
+    isProcessingRef.current = false;
+    queuedEntriesRef.current = [];
+    setIsAIThinking(false);
+    lastActivityRef.current = Date.now();
+    serverLog("info", "AI nudged by candidate", interviewId);
+    getAIResponseRef.current?.(transcriptRef.current);
+  }, [interviewId]);
 
   // Silence watchdog — if no activity for 90s AND no interim speech, nudge AI
   useEffect(() => { lastActivityRef.current = Date.now(); }, [transcript]);
@@ -2182,6 +2215,15 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         </div>
         {/* Skip button moved to chat area */}
         {/* Retry — re-send last transcript after AI failure */}
+        {aiStalled && !aiError && (
+          <button
+            onClick={nudgeAI}
+            title="The AI has not replied. Click to ask it to answer again."
+            className="rounded-full bg-amber-500 px-4 py-2.5 text-sm font-semibold text-black transition-all hover:bg-amber-400 animate-pulse"
+          >
+            AI not replying? Nudge
+          </button>
+        )}
         {aiError && !isProcessingRef.current && (
           <button
             onClick={() => {

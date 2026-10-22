@@ -22,7 +22,20 @@ import {
 
 export const MIN_CANDIDATE_ENTRIES = 2;
 
+/** One stage of a staged puzzle: what the candidate finally answered and how it compares with the accepted answer. */
+export interface StageResult {
+  label: string;
+  correctAnswer: string;
+  answer: string;
+  explanation: string;
+  verdict: "correct" | "partial" | "incorrect" | "not_reached";
+  help: string;
+}
+const VERDICTS: StageResult["verdict"][] = ["correct", "partial", "incorrect", "not_reached"];
+
 export interface PhaseScorecard {
+  stages?: StageResult[];
+  furthestStage?: string;
   skipped?: boolean;
   failed?: boolean;
   reason?: string;
@@ -45,8 +58,20 @@ export function normalizePhaseScorecard(raw: any, rubric: RubricCriterion[], isP
     const credit = hit && CREDITS.includes(hit.credit) ? (hit.credit as Credit) : "missed";
     return { id: r.id, credit, evidence: hit && typeof hit.evidence === "string" ? hit.evidence : "" };
   });
+  const text = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+  const stages: StageResult[] = isPuzzle && Array.isArray(raw?.stages)
+    ? raw.stages
+        .filter((x: any) => x && typeof x.label === "string" && x.label.trim())
+        .slice(0, 12)
+        .map((x: any) => {
+          const verdict: StageResult["verdict"] = VERDICTS.includes(x.verdict) ? x.verdict : "incorrect";
+          const reached = verdict !== "not_reached";
+          return { label: text(x.label, 90), correctAnswer: text(x.correctAnswer, 400), answer: reached ? text(x.answer, 400) : "", explanation: reached ? text(x.explanation, 600) : "", verdict, help: text(x.help, 120) };
+        })
+    : [];
   return {
     criteria,
+    ...(stages.length ? { stages, furthestStage: text(raw?.furthestStage, 90) } : {}),
     ...(isPuzzle && typeof raw?.finalAnswerCorrect === "boolean" ? { finalAnswerCorrect: raw.finalAnswerCorrect } : {}),
     notes: typeof raw?.notes === "string" ? raw.notes : "",
   };
@@ -99,7 +124,7 @@ INTERVIEWER-SUPPLIED CONTENT: if the interviewer's own words stated or strongly 
 RUBRIC (judge every criterion by its id):
 ${rubric.map((r) => `- id "${r.id}" (weight ${r.weight}): ${r.text}`).join("\n")}
 
-For each criterion choose credit "met" (clearly demonstrated), "partial" (partly or with prompting), or "missed" (not shown). Give a short evidence quote or paraphrase from the candidate's answers for each ("" if missed with nothing to cite).
+${phase.phaseKey === "puzzle" ? `STAGE-BY-STAGE RESULT: list every stage of this puzzle in order, using the labels of the accepted answers when they are labelled (for example STAGE 1, STAGE 1B, STAGE 2, BONUS, STAGE 3); a puzzle without stages has one entry, "Final answer". For each stage give: "label" (short, with the topic), "correctAnswer" (the right answer for that stage taken from the accepted answers, the number and the method in one or two sentences), "answer" (what the candidate finally answered for that stage, the number and the method, in the candidate's terms), "explanation" (the candidate's reasoning in two or three sentences: how they got there, and for a partial or wrong answer what was missing or wrong), "verdict" ("correct", "partial" or "incorrect" against the accepted answer for that stage, or "not_reached" if the interview never got to it, then "answer" and "explanation" are empty) and "help" (for example 'no hints', 'after hint 2', 'interviewer gave the structure', or ''). "furthestStage" is the label of the last stage the candidate gave an answer for.\n\n` : ""}For each criterion choose credit "met" (clearly demonstrated), "partial" (partly or with prompting), or "missed" (not shown). Give a short evidence quote or paraphrase from the candidate's answers for each ("" if missed with nothing to cite).
 
 ## Interviewer question -> candidate answer pairs for this phase
 ${qa}
@@ -107,7 +132,7 @@ ${qa}
 Inside the evidence and notes text never use double quotes (use single quotes), so the JSON stays valid.\n\nRespond with ONLY valid JSON:
 {
   "criteria": [{"id": "<rubric id>", "credit": "met|partial|missed", "evidence": "<quote or paraphrase>"}],
-  ${phase.phaseKey === "puzzle" ? '"finalAnswerCorrect": <true|false>,\n  ' : ""}"notes": "<2-4 sentences on the candidate's reasoning in this phase>"
+  ${phase.phaseKey === "puzzle" ? '"stages": [{"label": "<stage label>", "correctAnswer": "<right answer>", "answer": "<candidate answer>", "explanation": "<candidate reasoning>", "verdict": "correct|partial|incorrect|not_reached", "help": "<help needed>"}],\n  "furthestStage": "<label>",\n  "finalAnswerCorrect": <true|false>,\n  ' : ""}"notes": "<2-4 sentences on the candidate's reasoning in this phase>"
 }`;
 }
 
@@ -243,6 +268,7 @@ export function describePhase(phase: PhaseRow, sc: PhaseScorecard) {
     hintsUsed: phase.hintsUsed.map((u) => ({ order: u.order, atMin: u.atMin, text: ladder.find((h) => h.order === u.order)?.text || "" })),
     weakAnswers: phase.weakAnswers,
     ...(sc.finalAnswerCorrect !== undefined ? { finalAnswerCorrect: sc.finalAnswerCorrect } : {}),
+    ...(sc.stages?.length ? { stages: sc.stages, furthestStage: sc.furthestStage || "" } : {}),
     notes: sc.notes || "",
   };
 }
