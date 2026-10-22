@@ -479,6 +479,8 @@ Expect, in this order: (1) most candidates first try the Stage 1 binary plan. Le
 Common wrong answers: "20, two per bit" as a final answer (ask: bottles 0 and 3 are poisoned, which pair do you report?); "64, rows and columns" as a final answer (ask: the poisoned bottles are at row 1 column 5 and row 3 column 4, what else fits?).
 Follow-ups for strong candidates: "Your plan uses 96 testers and the lower bound is 19: where do you think the truth is?", "How would your plan change if 3 bottles were poisoned?", "If you were allowed a second round, how would you use it?"
 
+IF THE CANDIDATE SAYS "I ALREADY EXPLAINED THIS": do not accept or repeat the earlier answer and do not fill it in for them. Ask them to explain it again, clearly and completely, step by step. Only the explanation they give after you ask counts.
+
 Signals worth more than the final number: uses a counting argument without being prompted, tests their own plan on a small example before claiming it works, finds a counterexample to their own idea, stays calm and structured when the problem has no neat answer. Remember how far they got and how much help they needed (for example "Stage 2 solved with 1 hint; Stage 3 reached the lower bound but no complete plan").`,
   probes: [
     "Can you prove that one fewer tester is not enough?",
