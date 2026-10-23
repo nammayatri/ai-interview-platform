@@ -4,14 +4,14 @@ import { calculateOverall, calculateRecommendation, type DimScores } from "../sc
 import { DEFAULT_AI_SETTINGS } from "../ai-settings";
 
 // Mirrors the Poisoned Wine rubric and hint costs in scripts/seed/evaluation-content.mjs (problem solving only).
-const W: Record<string, number> = { stage1: 2, small_case: 1, counting: 2, stage2: 2, bonus: 1, stage3_break: 1.5, stage3_plan: 1, self_check: 0.5 };
+const W: Record<string, number> = { stage1: 2, small_case: 1, counting: 2, stage2: 2, bonus: 2.5, stage3_break: 1, stage3_plan: 1.5, self_check: 0.5 };
 const rubric = Object.entries(W).map(([id, weight]) => ({ id, text: id, weight, mapsTo: "problemSolving" as const }));
 const ladder = Array.from({ length: 10 }, (_, i) => ({ order: i + 1, text: "h", scoreDiscount: i < 6 ? 0.05 : 0.06 })) as any;
 
-function verdict(met: string[], hintCount: number) {
+function verdict(met: string[], hintCount: number, partial: string[] = []) {
   const phase: RollupPhaseInput = {
     key: "puzzle", scoreWeight: 0.3, rubric,
-    criteria: Object.keys(W).map((id) => ({ id, credit: (met.includes(id) ? "met" : "missed") as Credit, evidence: "" })),
+    criteria: Object.keys(W).map((id) => ({ id, credit: (met.includes(id) ? "met" : partial.includes(id) ? "partial" : "missed") as Credit, evidence: "" })),
     hintsUsed: Array.from({ length: hintCount }, (_, i) => ({ order: i + 1 })), hintLadder: ladder,
   };
   const notAssessed = puzzleOnlyNotAssessed([phase]);
@@ -27,16 +27,22 @@ describe("Poisoned Wine scoring", () => {
   it("scores only problem solving", () => {
     expect(verdict(THROUGH_BONUS, 0).notAssessed.sort()).toEqual(["communication", "cultureFit", "domainKnowledge", "technicalDepth"]);
   });
-  it("hires a candidate who finishes the bonus round, with up to 4 hints", () => {
-    for (const hints of [0, 1, 2, 3, 4]) expect(verdict(THROUGH_BONUS, hints).rec).toBe("hire");
-    expect(verdict(THROUGH_BONUS, 0).ps).toBeCloseTo(1 + 4 * (8 / 11), 1);
+  it("hires a candidate who finishes the bonus round, with up to 5 hints", () => {
+    for (const hints of [0, 1, 2, 3, 4, 5]) expect(verdict(THROUGH_BONUS, hints).rec).toBe("hire");
+    expect(verdict(THROUGH_BONUS, 0).ps).toBeCloseTo(1 + 4 * (9.5 / 12.5), 1);
   });
-  it("does not hire after 5 hints, or when the bonus is not reached and Stage 2 is missing", () => {
-    expect(verdict(THROUGH_BONUS, 5).rec).toBe("no_hire");
+  it("hires a candidate whose bonus is only half correct, with up to 3 hints", () => {
+    const earlier = ["stage1", "small_case", "counting", "stage2"];
+    for (const hints of [0, 1, 2, 3]) expect(verdict(earlier, hints, ["bonus"]).rec).toBe("hire");
+    expect(verdict(earlier, 4, ["bonus"]).rec).toBe("no_hire");
+  });
+  it("does not hire after 6 hints, or when Stage 2 and the bonus are both missing", () => {
+    expect(verdict(THROUGH_BONUS, 6).rec).toBe("no_hire");
     expect(verdict(["stage1", "small_case", "counting"], 0).rec).toBe("no_hire");
   });
-  it("hires Stage 1 + Stage 2 even without the bonus", () => {
-    expect(verdict(["stage1", "small_case", "counting", "stage2"], 2).rec).toBe("hire");
+  it("hires Stage 1 + Stage 2 even without the bonus, with at most 1 hint", () => {
+    expect(verdict(["stage1", "small_case", "counting", "stage2"], 1).rec).toBe("hire");
+    expect(verdict(["stage1", "small_case", "counting", "stage2"], 2).rec).toBe("no_hire");
   });
   it("needs Stage 3 for a strong hire", () => {
     expect(verdict(THROUGH_BONUS, 0).rec).toBe("hire");
