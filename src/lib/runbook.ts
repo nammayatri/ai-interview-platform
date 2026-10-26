@@ -56,6 +56,8 @@ export interface ProblemRunbook {
 export interface PuzzleRunbook {
   statementMd: string;
   acceptedAnswers: string[];
+  /** Phrases the interviewer may not say until the candidate has said them (see lib/reveal-guard.ts). */
+  noReveal?: string[];
   expectedMin: number;
   hintLadder: Hint[];
   rubric: RubricCriterion[];
@@ -206,7 +208,7 @@ export function validatePuzzleRunbook(raw: unknown): ValidationResult<PuzzleRunb
   const rubric = validateRubric(raw.rubric, errors);
 
   if (errors.length) return { ok: false, errors };
-  return { ok: true, value: { statementMd, acceptedAnswers: strList(raw.acceptedAnswers), expectedMin: Math.ceil(expectedMin), hintLadder, rubric } };
+  return { ok: true, value: { statementMd, acceptedAnswers: strList(raw.acceptedAnswers), noReveal: strList(raw.noReveal).slice(0, 80).map((p) => p.slice(0, 80)), expectedMin: Math.ceil(expectedMin), hintLadder, rubric } };
 }
 
 // ─── Submissions ────────────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ import { useParams, useSearchParams } from "next/navigation";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { ReviewPhases } from "@/components/dsa/ReviewPhases";
 
+import { toHundred } from "@/lib/score-scale";
 interface ScoreItem {
   dimension: string;
   score: number;
@@ -61,7 +62,7 @@ interface InterviewData {
 function ScoreRing({ score, label }: { score: number; label: string }) {
   const radius = 36;
   const circumference = 2 * Math.PI * radius;
-  const progress = (score / 5) * circumference;
+  const progress = ((toHundred(score) ?? 0) / 100) * circumference;
   const color =
     score > 3.5
       ? "text-green-600"
@@ -108,7 +109,7 @@ function ScoreRing({ score, label }: { score: number; label: string }) {
         </svg>
         <div className="absolute inset-0 flex items-center justify-center">
           <span className={`text-xl font-bold ${color}`}>
-            {score.toFixed(1)}
+            {toHundred(score)}
           </span>
         </div>
       </div>

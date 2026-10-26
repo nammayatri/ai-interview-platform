@@ -13,6 +13,8 @@ interface ProctoringProps {
   interviewId: string;
   enabled: boolean;
   onAlert: (alert: ProctoringAlert) => void;
+  /** False for an event type whose check the batch switched off: nothing is shown or recorded. */
+  isEventEnabled?: (type: string) => boolean;
   token?: string;
 }
 
@@ -31,7 +33,9 @@ async function sendProctoringEvent(interviewId: string, type: string, severity: 
   }
 }
 
-export default function Proctoring({ videoRef, interviewId, enabled, onAlert, token }: ProctoringProps) {
+export default function Proctoring({ videoRef, interviewId, enabled, onAlert, isEventEnabled, token }: ProctoringProps) {
+  const isEventEnabledRef = useRef(isEventEnabled);
+  isEventEnabledRef.current = isEventEnabled;
   // faceLandmarkerRef removed — FaceLandmarker model no longer available on Google CDN
   const faceCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const photoCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -86,6 +90,7 @@ export default function Proctoring({ videoRef, interviewId, enabled, onAlert, to
       if (now - lastTime < cooldown) return;
       lastAlertTimeRef.current[type] = now;
 
+      if (isEventEnabledRef.current && !isEventEnabledRef.current(type)) return;
       onAlert({ type, severity, message });
       sendProctoringEvent(interviewId, type, severity, message, token);
       // Violation photo max 1 per 30s to prevent spam

@@ -8,6 +8,7 @@ import { DashboardLayout } from "@/components/DashboardLayout";
 import { normalizeScorecard } from "@/lib/normalize-scorecard";
 import { ConfirmModal } from "@/components/ConfirmModal";
 
+import { toHundred } from "@/lib/score-scale";
 const dimensionLabels: Record<string, string> = {
   technicalDepth: "Technical Depth",
   communication: "Communication",
@@ -32,7 +33,7 @@ function formatRecommendation(rec: string) {
 }
 
 function ScoreBar({ value, label }: { value: number; label: string }) {
-  const pct = (value / 5) * 100;
+  const pct = toHundred(value) ?? 0;
   const color =
     value >= 4 ? "bg-green-500" : value >= 3 ? "bg-blue-500" : value >= 2 ? "bg-amber-500" : "bg-red-500";
   const barRef = useRef<HTMLDivElement>(null);
@@ -58,8 +59,8 @@ function ScoreBar({ value, label }: { value: number; label: string }) {
           style={{ width: "0%" }}
         />
       </div>
-      <span className="text-[10px] text-gray-400 shrink-0">5</span>
-      <span className="text-sm font-bold text-gray-900 w-8 text-right">{value}</span>
+      <span className="text-[10px] text-gray-400 shrink-0">100</span>
+      <span className="text-sm font-bold text-gray-900 w-9 text-right">{toHundred(value)}</span>
     </div>
   );
 }
@@ -226,13 +227,18 @@ export default function InterviewDetailPage({ params }: { params: { id: string }
                     <circle cx="18" cy="18" r="14" fill="none"
                       stroke={interview.scorecard.overall >= 3.5 ? "#22c55e" : interview.scorecard.overall >= 2.5 ? "#f59e0b" : "#ef4444"}
                       strokeWidth="2.5" strokeLinecap="round"
-                      strokeDasharray={`${(interview.scorecard.overall / 5) * 87.96} 87.96`}
+                      strokeDasharray={`${((toHundred(interview.scorecard.overall) ?? 0) / 100) * 87.96} 87.96`}
                     />
                   </svg>
                   <span className="absolute inset-0 flex items-center justify-center text-sm font-bold text-gray-900">
-                    {interview.scorecard.overall}
+                    {toHundred(interview.scorecard.overall)}
                   </span>
                 </div>
+                {typeof (interview as any).batch?.passMark === "number" && (
+                  <span className={(toHundred(interview.scorecard.overall) ?? 0) >= (interview as any).batch.passMark ? "badge-success" : "badge-danger"} title={`Pass mark for this batch: ${(interview as any).batch.passMark}/100`}>
+                    {(toHundred(interview.scorecard.overall) ?? 0) >= (interview as any).batch.passMark ? "Pass" : "Fail"}
+                  </span>
+                )}
                 <span className={recommendationBadge[interview.scorecard.recommendation] || "badge-info"}>
                   {formatRecommendation(interview.scorecard.recommendation)}
                 </span>
@@ -391,7 +397,7 @@ export default function InterviewDetailPage({ params }: { params: { id: string }
                 {/* Overall Score */}
                 <div className="flex items-center gap-4 mb-6 pb-6 border-b border-gray-100">
                   <div className="w-16 h-16 rounded-2xl bg-indigo-50 flex items-center justify-center">
-                    <span className="text-2xl font-bold text-indigo-600">{interview.scorecard.overall}</span>
+                    <span className="text-2xl font-bold text-indigo-600">{toHundred(interview.scorecard.overall)}<span className="text-sm font-normal text-gray-400"> / 100</span></span>
                   </div>
                   <div>
                     <p className="text-sm text-gray-500">Overall Score</p>

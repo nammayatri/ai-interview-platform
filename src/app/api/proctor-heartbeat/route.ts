@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { pool } from "@/lib/db";
 import { validateAccessPost } from "@/lib/auth-check";
+import { candidateProctoringView } from "@/lib/batch-settings";
+import { getInterviewSettings } from "@/lib/interview-settings";
 
 export async function POST(req: Request) {
   try {
@@ -15,7 +17,8 @@ export async function POST(req: Request) {
       "UPDATE interviews SET last_heartbeat_at = NOW() WHERE id = $1 AND status = 'in_progress'",
       [interviewId]
     );
-    return NextResponse.json({ ok: true });
+    // The reply carries the current proctoring rules, so a change by the admin reaches a running interview within one beat.
+    return NextResponse.json({ ok: true, proctoringRules: candidateProctoringView(await getInterviewSettings(interviewId)) });
   } catch (error) {
     return NextResponse.json({ error: "Failed" }, { status: 500 });
   }

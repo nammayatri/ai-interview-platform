@@ -166,9 +166,11 @@ export interface ParsedMarkers {
   hint?: number;
   phaseDone: boolean;
   endInterview: boolean;
+  /** The stage the interviewer has just moved to (a short label such as 1, 2, BONUS); shown on the live batch view. */
+  stage?: string;
 }
 
-const ANY_MARKER = /\[\s*(ASSESS|HINT|PHASE_DONE|END_INTERVIEW)\s*(?::\s*([^\]\n]*?))?\s*\]/gi;
+const ANY_MARKER = /\[\s*(ASSESS|HINT|PHASE_DONE|END_INTERVIEW|STAGE)\s*(?::\s*([^\]\n]*?))?\s*\]/gi;
 
 /** Removes every marker without interpreting it (used per sentence while streaming). */
 export function stripMarkers(text: string): string {
@@ -188,6 +190,9 @@ export function parseMarkers(text: string): ParsedMarkers {
     } else if (name === "HINT") {
       const n = parseInt(arg, 10);
       if (Number.isInteger(n) && n > 0 && out.hint === undefined && /^\d+$/.test(arg)) out.hint = n;
+    } else if (name === "STAGE") {
+      const label = arg.replace(/[^\w .+-]/g, "").trim().slice(0, 30);
+      if (label) out.stage = label;
     } else if (name === "PHASE_DONE") {
       out.phaseDone = true;
     } else if (name === "END_INTERVIEW") {

@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
+import { disabledEventTypes, effectiveMaxStrikes } from "@/lib/batch-settings";
+import { getInterviewSettings } from "@/lib/interview-settings";
 import { getInterview, addTranscriptEntry, getProctoringViolationCount, updateInterview, addProctoringEvent } from "@/lib/store";
 import { getAIResponse, getDsaAIText, stripThinking } from "@/lib/ai";
-import { rateLimit } from "@/lib/rate-limit";
+import { aiTurnAllowed } from "@/lib/rate-limit";
 import { canEndNow, getRemainingSeconds } from "@/lib/interview-time";
 import { cleanForTTS } from "@/lib/tts-text";
 import { validateAccessPost } from "@/lib/auth-check";
@@ -16,11 +18,11 @@ import { getTTSProvider } from "@/lib/providers";
 export async function POST(req: Request) {
   try {
     const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
-    if (!rateLimit(ip, 30, 60000)) {
-      return NextResponse.json({ error: "Too many requests" }, { status: 429 });
-    }
 
     const { interviewId, transcript, token, skipSave, tts, scratchpad, trigger } = await req.json();
+    if (!aiTurnAllowed(ip, interviewId)) {
+      return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+    }
     const ttsEnabled = tts !== false; // candidate can turn the AI voice off (text-only)
 
     if (!interviewId) {
@@ -33,9 +35,9 @@ export async function POST(req: Request) {
     }
 
     // Parallel: interview data + violation count + heartbeat
-    const [interview, violations, hbResult] = await Promise.all([
+    const [interview, { s: settings, v: violations }, hbResult] = await Promise.all([
       getInterview(interviewId),
-      getProctoringViolationCount(interviewId),
+      getInterviewSettings(interviewId).then((s) => getProctoringViolationCount(interviewId, disabledEventTypes(s)).then((v) => ({ s, v }))),
       pool.query("SELECT last_heartbeat_at FROM interviews WHERE id = $1", [interviewId]),
     ]);
 
@@ -44,7 +46,7 @@ export async function POST(req: Request) {
     }
 
     // Server-side proctoring enforcement
-    const MAX_STRIKES = parseInt(process.env.MAX_PROCTORING_STRIKES || process.env.NEXT_PUBLIC_MAX_PROCTORING_STRIKES || "25");
+    const MAX_STRIKES = effectiveMaxStrikes(settings);
     if (violations >= MAX_STRIKES) {
       await updateInterview(interviewId, { status: "completed", endedAt: new Date().toISOString() });
       return NextResponse.json({ error: "Interview terminated due to proctoring violations" }, { status: 403 });

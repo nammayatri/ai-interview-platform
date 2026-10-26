@@ -4,19 +4,46 @@
 // score ring, verdict badge, proctoring cell, date and View button, with the same search and filter pills.
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { passVerdict, toHundred } from "@/lib/score-scale";
+import type { LiveStatus } from "@/lib/batch-live";
 
 export interface BatchCandidate {
   id: string; name: string; email: string; phone: string; resumeFileName: string;
   role: string; level: string; status: string; registeredAt: string;
   startedAt: string | null; endedAt: string | null; scoringStatus: string | null;
   recommendation: string | null; overall: number | null; flags: number; warnings: number;
+  /** Only for candidates who are in the test right now. */
+  live?: LiveStatus | null;
 }
 
 type SortField = "date" | "score" | "status";
 
 const formatDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";
-const scoreColor = (s: number) => (s >= 3.5 ? "text-green-600" : s >= 2.5 ? "text-amber-600" : "text-red-600");
+const PHASE_LABEL: Record<string, string> = { parta: "Part A", dsa: "DSA", puzzle: "Puzzle" };
+const aiVerdict = (r: string) => r.replace(/_/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase());
+
+/** Where a running candidate is: finished phases ticked, the current one with its puzzle stage, and any sign of trouble. */
+function NowCell({ live }: { live: LiveStatus }) {
+  const offline = live.secondsSinceHeartbeat !== null && live.secondsSinceHeartbeat > 60;
+  return (
+    <div className="space-y-1">
+      <div className="flex flex-wrap items-center gap-1">
+        {live.phases.length === 0 && <span className="text-xs text-gray-400">Just started</span>}
+        {live.phases.map((p) => (
+          <span key={p.key} className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${p.status === "completed" ? "bg-green-50 text-green-700" : p.status === "active" ? "bg-blue-50 text-blue-700" : "bg-gray-100 text-gray-400"}`}>
+            {p.status === "completed" ? "✓ " : ""}{PHASE_LABEL[p.key] || p.key}{p.status === "active" && p.key === "puzzle" ? ` · Stage ${live.stage || "1"}` : ""}
+          </span>
+        ))}
+      </div>
+      <p className="text-[11px] text-gray-500">
+        {live.hintsUsed > 0 ? `${live.hintsUsed} hint${live.hintsUsed === 1 ? "" : "s"} · ` : ""}
+        {live.strikes > 0 ? `${live.strikes} strike${live.strikes === 1 ? "" : "s"} · ` : ""}
+        {offline ? <span className="font-medium text-red-600">no signal for {Math.round((live.secondsSinceHeartbeat as number) / 60)} min</span> : "connected"}
+      </p>
+    </div>
+  );
+}
 
 function statusBadge(status: string) {
   switch (status) {
@@ -39,7 +66,7 @@ function statusBadge(status: string) {
   }
 }
 
-export function CandidatesTable({ candidates, batchName }: { candidates: BatchCandidate[]; batchName: string }) {
+export function CandidatesTable({ candidates, batchName, passMark }: { candidates: BatchCandidate[]; batchName: string; passMark: number }) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [verdictFilter, setVerdictFilter] = useState("all");
@@ -55,9 +82,9 @@ export function CandidatesTable({ candidates, batchName }: { candidates: BatchCa
     let r = candidates;
     if (statusFilter !== "all") r = r.filter((c) => c.status === statusFilter);
     if (verdictFilter !== "all") {
-      if (verdictFilter === "hire") r = r.filter((c) => c.recommendation?.includes("hire") && !c.recommendation.includes("no"));
-      else if (verdictFilter === "no_hire") r = r.filter((c) => c.recommendation?.includes("no_hire") || c.recommendation?.includes("strong_no"));
-      else if (verdictFilter === "unscored") r = r.filter((c) => !c.recommendation);
+      if (verdictFilter === "pass") r = r.filter((c) => passVerdict(c.overall, passMark) === "pass");
+      else if (verdictFilter === "fail") r = r.filter((c) => passVerdict(c.overall, passMark) === "fail");
+      else if (verdictFilter === "unscored") r = r.filter((c) => c.overall === null);
     }
     if (search.trim()) {
       const q = search.trim().toLowerCase();
@@ -71,12 +98,12 @@ export function CandidatesTable({ candidates, batchName }: { candidates: BatchCa
       else cmp = (order[a.status] ?? 9) - (order[b.status] ?? 9);
       return sortDir === "desc" ? -cmp : cmp;
     });
-  }, [candidates, statusFilter, verdictFilter, search, sortField, sortDir]);
+  }, [candidates, statusFilter, verdictFilter, search, sortField, sortDir, passMark]);
 
   const exportCSV = () => {
     const cell = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const head = ["Name", "Email", "Phone", "Role", "Level", "Status", "Score", "Verdict", "Flags", "Warnings", "Registered"];
-    const rows = filtered.map((c) => [c.name, c.email, c.phone, c.role, c.level, c.status, c.overall ?? "", c.recommendation ? c.recommendation.replace(/_/g, " ") : "", c.flags, c.warnings, c.registeredAt]);
+    const head = ["Name", "Email", "Phone", "Role", "Level", "Status", "Score (out of 100)", "Result", "AI recommendation", "Flags", "Warnings", "Registered"];
+    const rows = filtered.map((c) => [c.name, c.email, c.phone, c.role, c.level, c.status, toHundred(c.overall) ?? "", passVerdict(c.overall, passMark) ?? "", c.recommendation ? c.recommendation.replace(/_/g, " ") : "", c.flags, c.warnings, c.registeredAt]);
     const url = URL.createObjectURL(new Blob([[head, ...rows].map((r) => r.map(cell).join(",")).join("\n")], { type: "text/csv" }));
     const a = document.createElement("a");
     a.href = url; a.download = `${batchName.replace(/[^\w-]+/g, "_")}_candidates.csv`; a.click();
@@ -119,7 +146,7 @@ export function CandidatesTable({ candidates, batchName }: { candidates: BatchCa
         </div>
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
           {pills([{ key: "all", label: "All" }, { key: "waiting", label: "Pending" }, { key: "in_progress", label: "Active" }, { key: "completed", label: "Completed" }], statusFilter, setStatusFilter)}
-          {pills([{ key: "all", label: "All Verdicts" }, { key: "hire", label: "Hire" }, { key: "no_hire", label: "No Hire" }, { key: "unscored", label: "Unscored" }], verdictFilter, setVerdictFilter)}
+          {pills([{ key: "all", label: "All Results" }, { key: "pass", label: `Pass (${passMark}+)` }, { key: "fail", label: "Fail" }, { key: "unscored", label: "Unscored" }], verdictFilter, setVerdictFilter)}
         </div>
       </div>
 
@@ -137,7 +164,8 @@ export function CandidatesTable({ candidates, batchName }: { candidates: BatchCa
                   <th className={th}>Role</th>
                   <th className={thSort} onClick={() => toggleSort("status")}>Status <SortIcon field="status" /></th>
                   <th className={thSort} onClick={() => toggleSort("score")}>Score <SortIcon field="score" /></th>
-                  <th className={th}>Verdict</th>
+                  <th className={th}>Result</th>
+                  <th className={th}>Right now</th>
                   <th className={th}>Proctoring</th>
                   <th className={thSort} onClick={() => toggleSort("date")}>Registered <SortIcon field="date" /></th>
                   <th className="px-6 py-3" />
@@ -164,9 +192,9 @@ export function CandidatesTable({ candidates, batchName }: { candidates: BatchCa
                             <div className="relative w-8 h-8">
                               <svg className="w-8 h-8 -rotate-90" viewBox="0 0 36 36">
                                 <circle cx="18" cy="18" r="14" fill="none" stroke="#e5e7eb" strokeWidth="3" />
-                                <circle cx="18" cy="18" r="14" fill="none" stroke={c.overall >= 3.5 ? "#22c55e" : c.overall >= 2.5 ? "#f59e0b" : "#ef4444"} strokeWidth="3" strokeLinecap="round" strokeDasharray={`${(c.overall / 5) * 87.96} 87.96`} />
+                                <circle cx="18" cy="18" r="14" fill="none" stroke={passVerdict(c.overall, passMark) === "pass" ? "#22c55e" : "#ef4444"} strokeWidth="3" strokeLinecap="round" strokeDasharray={`${((toHundred(c.overall) ?? 0) / 100) * 87.96} 87.96`} />
                               </svg>
-                              <span className={`absolute inset-0 flex items-center justify-center text-[10px] font-bold ${scoreColor(c.overall)}`}>{c.overall}</span>
+                              <span className={`absolute inset-0 flex items-center justify-center text-[10px] font-bold ${passVerdict(c.overall, passMark) === "pass" ? "text-green-600" : "text-red-600"}`}>{toHundred(c.overall)}</span>
                             </div>
                           </div>
                         ) : c.scoringStatus === "generating" ? (
@@ -176,14 +204,16 @@ export function CandidatesTable({ candidates, batchName }: { candidates: BatchCa
                         )}
                       </td>
                       <td className="px-6 py-4">
-                        {c.recommendation ? (
-                          <span className={c.recommendation.includes("hire") && !c.recommendation.includes("no") ? "badge-success" : "badge-danger"}>
-                            {c.recommendation.replace(/_/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase())}
-                          </span>
+                        {c.overall !== null ? (
+                          <div>
+                            <span className={passVerdict(c.overall, passMark) === "pass" ? "badge-success" : "badge-danger"}>{passVerdict(c.overall, passMark) === "pass" ? "Pass" : "Fail"}</span>
+                            {c.recommendation && <p className="mt-0.5 text-[11px] text-gray-400" title="The AI's own recommendation">AI: {aiVerdict(c.recommendation)}</p>}
+                          </div>
                         ) : (
                           <span className="text-sm text-gray-400">-</span>
                         )}
                       </td>
+                      <td className="px-6 py-4">{c.status === "in_progress" && c.live ? <NowCell live={c.live} /> : <span className="text-sm text-gray-400">-</span>}</td>
                       <td className="px-6 py-4">
                         {total > 0 ? (
                           <div className="flex items-center gap-1.5">

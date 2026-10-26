@@ -10,6 +10,8 @@ import { ConfirmModal } from "@/components/ConfirmModal";
 import { DEFAULT_LATE_ENTRY_MIN, DEFAULT_OPENS_BEFORE_MIN } from "@/lib/batches-defaults";
 import { StageChips, type TemplateRow } from "@/components/templates/TemplatesPage";
 import { CandidatesTable, type BatchCandidate } from "./CandidatesTable";
+import { BatchSettingsPanel } from "./BatchSettingsPanel";
+import type { BatchSettings } from "@/lib/batch-settings";
 import { InviteFilePicker, InviteModal, submitInvites, summarise, type ParsedInvites } from "./InviteCandidates";
 
 type Phase = "not_open" | "open" | "live" | "closed";
@@ -19,6 +21,7 @@ interface BatchRow {
   isClosed: boolean; phase: Phase; registered: number; started: number; completed: number; createdAt: string;
   isArchived: boolean; durationMin: number; createdByName: string | null;
   invited: number; emailsSent: number; emailsFailed: number; invitedLoggedIn: number;
+  settings: BatchSettings;
 }
 interface InviteView {
   id: string; email: string; name: string; emailStatus: string; emailSentAt: string | null; emailError: string | null; emailAttempts: number;
@@ -361,6 +364,14 @@ export function BatchDetailPage({ id }: { id: string }) {
       setSending("");
     }
   };
+  const rescoreMissing = async () => {
+    setError(""); setNote("");
+    const res = await fetch(`/api/batches/${id}/rescore`, { method: "POST" }).catch(() => null);
+    const d = await res?.json().catch(() => ({}));
+    if (!res?.ok) setError(d?.error || "Could not start scoring.");
+    else setNote(d.started > 0 ? `Scoring ${d.started} interview${d.started === 1 ? "" : "s"} again. Scores appear here as they finish.` : "Nothing to score: every finished interview already has a score or is being scored.");
+    await load();
+  };
   const removeInvite = async (inviteId: string) => {
     await fetch(`/api/batches/${id}/invites/${inviteId}`, { method: "DELETE" }).catch(() => {});
     load();
@@ -395,6 +406,8 @@ export function BatchDetailPage({ id }: { id: string }) {
     if (res.ok) window.location.href = "/batches";
     else { const d = await res.json().catch(() => ({})); setError(d.error || "Could not delete."); setConfirmDelete(false); }
   };
+
+  const unscored = batch ? batch.candidates.filter((c) => c.status === "completed" && c.overall === null && c.scoringStatus !== "generating").length : 0;
 
   if (missing) return <DashboardLayout><div className="card mx-auto max-w-xl p-10 text-center text-sm text-gray-600">This batch was not found. <Link href="/batches" className="text-indigo-600">Back to batches</Link></div></DashboardLayout>;
   if (!batch) return <DashboardLayout><div className="flex justify-center py-20"><div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" /></div></DashboardLayout>;
@@ -452,8 +465,17 @@ export function BatchDetailPage({ id }: { id: string }) {
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-gray-600">
           <span><span className="text-lg font-semibold text-gray-900">{batch.registered}</span> registered{batch.maxCandidates ? ` of ${batch.maxCandidates}` : ""}</span>
           <span><span className="text-lg font-semibold text-gray-900">{batch.started}</span> started</span>
+          <span><span className="text-lg font-semibold text-blue-600">{batch.candidates.filter((c) => c.status === "in_progress").length}</span> in the test now</span>
           <span><span className="text-lg font-semibold text-gray-900">{batch.completed}</span> completed</span>
+          {unscored > 0 && canEdit && <span className="flex items-center gap-2"><span className="text-amber-600">{unscored} without a score</span><button className="text-xs font-medium text-indigo-600 hover:underline" onClick={rescoreMissing}>Score them again</button></span>}
         </div>
+
+        <BatchSettingsPanel
+          settings={batch.settings}
+          canEdit={canEdit}
+          running={batch.candidates.filter((c) => c.status === "in_progress").length}
+          onSave={(next) => patch({ settings: next })}
+        />
 
         {(batch.invites.length > 0 || canEdit) && (
           <div className="card space-y-3 p-5">
@@ -508,7 +530,7 @@ export function BatchDetailPage({ id }: { id: string }) {
 
         <div>
           <h2 className="mb-2 text-base font-semibold text-gray-900">All candidates who registered</h2>
-          <CandidatesTable candidates={batch.candidates} batchName={batch.name} />
+          <CandidatesTable candidates={batch.candidates} batchName={batch.name} passMark={batch.settings.passMark} />
         </div>
       </div>
       {showInvite && <InviteModal batch={batch} onClose={() => setShowInvite(false)} onDone={load} />}

@@ -1,4 +1,6 @@
 import { pool } from "./db";
+import { disabledEventTypes } from "./batch-settings";
+import { getInterviewSettings } from "./interview-settings";
 import { stripNul } from "./text-clean";
 import type { PhaseRow } from "./phase-engine";
 import { getPhases, getSubmissions, type Submission } from "./phase-store";
@@ -272,11 +274,8 @@ async function getProctoringEventsWithPhotos(interviewId: string): Promise<Proct
   }));
 }
 
-export async function getProctoringViolationCount(interviewId: string): Promise<number> {
-  // Weights must match client-side strikeWeights in InterviewRoom.tsx
-  const { rows } = await pool.query(
-    `SELECT COALESCE(SUM(
-      CASE type
+/** Strike weight of one proctoring event (flag severity only). Must match client-side strikeWeights in InterviewRoom.tsx. */
+export const STRIKE_WEIGHT_SQL = `CASE type
         WHEN 'face_missing' THEN 0.25
         WHEN 'multiple_faces' THEN 1
         WHEN 'screen_share_stopped' THEN 0.5
@@ -288,10 +287,18 @@ export async function getProctoringViolationCount(interviewId: string): Promise<
         WHEN 'paste_attempt' THEN 0.25
         WHEN 'screenshot_attempt' THEN 0.5
         ELSE 0
-      END
+      END`;
+
+/** Weighted strikes. Events whose check the batch switched off do not count (pass the list when the caller already has the settings). */
+export async function getProctoringViolationCount(interviewId: string, disabledTypes?: string[]): Promise<number> {
+  const disabled = disabledTypes ?? disabledEventTypes(await getInterviewSettings(interviewId));
+  // Weights must match client-side strikeWeights in InterviewRoom.tsx
+  const { rows } = await pool.query(
+    `SELECT COALESCE(SUM(
+      ${STRIKE_WEIGHT_SQL}
     ), 0) as weighted_count
-    FROM proctoring_events WHERE interview_id = $1 AND severity = 'flag'`,
-    [interviewId]
+    FROM proctoring_events WHERE interview_id = $1 AND severity = 'flag' AND NOT (type = ANY($2::text[]))`,
+    [interviewId, disabled]
   );
   return parseFloat(rows[0].weighted_count);
 }

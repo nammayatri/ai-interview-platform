@@ -362,7 +362,45 @@ export async function callSummaryAI(
   maxTokens = aiLimits.finalScoringMaxTokens(),
   temperature = 0.3
 ): Promise<string> {
-  return callAI(getSummaryConfig(), messages, maxTokens, temperature);
+  return withScoringSlot(() => withRetries(() => callAI(getSummaryConfig(), messages, maxTokens, temperature)));
+}
+
+// A whole batch finishes at the same moment, so dozens of scoring calls arrive together. Cap how many run at once on
+// this pod (SCORING_CONCURRENCY, default 4) and retry the transient failures (rate limit, gateway errors, dropped
+// connection) with a growing wait, instead of failing the scorecard on the first 429.
+let scoringRunning = 0;
+const scoringWaiters: (() => void)[] = [];
+async function withScoringSlot<T>(fn: () => Promise<T>): Promise<T> {
+  const max = aiLimits.scoringConcurrency();
+  while (scoringRunning >= max) await new Promise<void>((r) => scoringWaiters.push(r));
+  scoringRunning++;
+  try {
+    return await fn();
+  } finally {
+    scoringRunning--;
+    scoringWaiters.shift()?.();
+  }
+}
+
+export function isTransientAIError(message: string): boolean {
+  return /AI API error: (408|425|429|5\d\d)\b/.test(message) || /AI API error: 403 <!doctype/i.test(message) || /fetch failed|ECONNRESET|ETIMEDOUT|UND_ERR|socket|aborted|network/i.test(message);
+}
+
+async function withRetries<T>(fn: () => Promise<T>, attempts = aiLimits.scoringAttempts()): Promise<T> {
+  let last: unknown;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      last = err;
+      const msg = (err as Error)?.message || String(err);
+      if (i === attempts || !isTransientAIError(msg)) throw err;
+      const wait = Math.min(60_000, 4000 * 2 ** (i - 1)) + Math.floor(Math.random() * 2000);
+      console.warn(`[AI] Scoring call failed (attempt ${i}/${attempts}): ${msg.slice(0, 120)}. Retrying in ${Math.round(wait / 1000)}s`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+  throw last;
 }
 
 // Back-compat alias — existing callers will be updated to use callChatAI / callSummaryAI.
@@ -556,6 +594,7 @@ ${levelBar}
 
 SCORING (1-5 scale, relative to ${interview.level} bar):
 5 = exceptional with production examples; 4 = strong with real specifics; 3 = adequate, surface-level; 2 = gaps/vague; 1 = cannot answer basics.
+In your written text (summary, strengths, evidence) never quote a numeric score or say "out of 5": the reports show scores out of 100, so numbers in prose would not match.
 
 DIMENSIONS:
 - technicalDepth: depth of knowledge with specifics (not surface)

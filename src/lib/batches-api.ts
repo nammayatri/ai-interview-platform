@@ -2,6 +2,7 @@ import { pool } from "./db";
 import { batchPhase, batchWindow } from "./batches";
 import { stagesDuration } from "./runbook";
 import { INVITE_COUNT_SQL } from "./batch-invites";
+import { normalizeBatchSettings } from "./batch-settings";
 
 /** A batch row from the database, shaped for the admin screens. */
 /** The public link is /join/<code>; the screens add the site address from the browser (the server only sees its internal host). */
@@ -27,6 +28,8 @@ export function mapBatch(r: any) {
     isClosed: r.is_closed,
     phase: batchPhase(timing),
     isArchived: r.is_archived === true,
+    // Proctoring rules and the passing mark (migration 008); the defaults until the batch sets its own.
+    settings: normalizeBatchSettings(r.settings),
     durationMin: stagesDuration(r.stages || []),
     createdByName: r.created_by_name || null,
     invited: Number(r.invited ?? 0),
@@ -46,6 +49,8 @@ export interface InterviewBatchInfo {
   startsAt: string;
   closesAt: string;
   serverNow: string;
+  /** Admin views only; the candidate's copy of this object never carries it. */
+  passMark?: number;
 }
 
 /** The batch an interview was registered through, with the live phase; null for an ordinary interview. */
@@ -53,7 +58,7 @@ export async function getInterviewBatch(interviewId: string, now: number = Date.
   let rows: any[];
   try {
     ({ rows } = await pool.query(
-      `SELECT b.name, b.starts_at, b.opens_before_min, b.late_entry_min, b.is_closed
+      `SELECT b.*
        FROM interviews i JOIN interview_batches b ON b.id = i.batch_id WHERE i.id = $1`,
       [interviewId]
     ));
@@ -66,7 +71,7 @@ export async function getInterviewBatch(interviewId: string, now: number = Date.
   const r = rows[0];
   const timing = { startsAt: r.starts_at, opensBeforeMin: r.opens_before_min, lateEntryMin: r.late_entry_min, isClosed: r.is_closed };
   const w = batchWindow(timing);
-  return { name: r.name, phase: batchPhase(timing, now), startsAt: new Date(w.startsAt).toISOString(), closesAt: new Date(w.closesAt).toISOString(), serverNow: new Date(now).toISOString() };
+  return { name: r.name, phase: batchPhase(timing, now), startsAt: new Date(w.startsAt).toISOString(), closesAt: new Date(w.closesAt).toISOString(), serverNow: new Date(now).toISOString(), passMark: normalizeBatchSettings(r.settings).passMark };
 }
 
 const BASE_COUNTS = `

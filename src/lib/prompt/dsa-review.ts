@@ -150,6 +150,12 @@ function flowSection(phase: PhaseRow, label: string): string {
   return `${label} FLOW (runbook "${flow.name}"). Work through these steps in order, ONE question per turn, adapting to the answers:\n${flow.instructions}${probes}`;
 }
 
+/** When the runbook is written as numbered stages, the interviewer reports each stage it moves to (marker is never spoken). */
+function stageMarkerNote(phase: PhaseRow): string {
+  if (!/\bSTAGE\b/.test(phaseFlow(phase).instructions)) return "";
+  return `\n\nSTAGE MARKER: on the turn where you present a new stage (the statement counts as stage 1, so mark it on the opening turn), append [STAGE:label] at the very end, where label is the stage's own name in the flow above (for example 1, 1B, 2, BONUS, 3). Append it once per stage and never speak it.`;
+}
+
 function tracksText(rb: PartAPhaseConfig["runbook"]): string {
   return rb.solutionTracks
     .map((t, i) => {
@@ -262,7 +268,7 @@ ${sel.runbook.statementMd}
 
 ${accepted}
 
-${flowSection(phase, "PUZZLE")}${priorPhasesNote(inp)}${phaseTimeNote(phase, inp.resolution)}${hintSection(inp.unlockedHint)}${scratchpadSection(inp.scratchpad)}${globalTimeNote(inp.resolution)}${opening}`;
+${flowSection(phase, "PUZZLE")}${stageMarkerNote(phase)}${priorPhasesNote(inp)}${phaseTimeNote(phase, inp.resolution)}${hintSection(inp.unlockedHint)}${scratchpadSection(inp.scratchpad)}${globalTimeNote(inp.resolution)}${opening}`;
 }
 
 function buildClosingSystem(inp: DsaPromptInput): string {

@@ -4,6 +4,7 @@
 // hints used, the submitted code and the candidate's final scratchpad.
 import { DIMENSION_LABELS, type Dimension } from "@/lib/runbook";
 
+import { toHundred } from "@/lib/score-scale";
 export interface ScorecardPhase {
   key: "parta" | "dsa" | "puzzle";
   title: string;
@@ -109,7 +110,7 @@ export function ReviewPhases({ phases, dimensionSources, interviewPhases, submis
             </div>
             {p.score !== null ? (
               <div className="text-right">
-                <p className="text-2xl font-bold text-gray-900">{p.score.toFixed(1)}<span className="text-sm font-normal text-gray-400"> / 5</span></p>
+                <p className="text-2xl font-bold text-gray-900">{toHundred(p.score)}<span className="text-sm font-normal text-gray-400"> / 100</span></p>
                 {p.rawCredit !== undefined && (
                   <p className="text-[11px] text-gray-500">
                     raw {Math.round(p.rawCredit * 100)}%{p.hintDiscount ? ` − hints ${Math.round(p.hintDiscount * 100)}%` : ""} = {Math.round((p.creditAfterDiscount ?? p.rawCredit) * 100)}%

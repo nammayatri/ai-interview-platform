@@ -1,13 +1,16 @@
 import { getInterview, addTranscriptEntry, getProctoringViolationCount, addProctoringEvent } from "@/lib/store";
+import { disabledEventTypes, effectiveMaxStrikes } from "@/lib/batch-settings";
+import { getInterviewSettings } from "@/lib/interview-settings";
 import { stripThinking, buildInterviewPrompt } from "@/lib/ai";
 import { validateAccessPost } from "@/lib/auth-check";
-import { rateLimit } from "@/lib/rate-limit";
+import { aiTurnAllowed } from "@/lib/rate-limit";
 import { pool } from "@/lib/db";
 import { getTTSProvider } from "@/lib/providers";
 import { canEndNow, getRemainingSeconds } from "@/lib/interview-time";
 import { cleanForTTS } from "@/lib/tts-text";
 import { aiLimits } from "@/lib/ai-limits";
 import { stripMarkers } from "@/lib/phase-engine";
+import { guardSentence, NEUTRAL_FALLBACK } from "@/lib/reveal-guard";
 import { finalizeDsaTurn, isDsaReview, prepareDsaTurn, type DsaTurnPrep } from "@/lib/dsa-turn";
 import { finishInterview } from "@/lib/scoring/background";
 
@@ -17,11 +20,11 @@ export const maxDuration = 60;
 export async function POST(req: Request) {
   try {
     const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
-    if (!rateLimit(ip, 30, 60000)) {
-      return new Response(JSON.stringify({ error: "Too many requests" }), { status: 429 });
-    }
 
     const { interviewId, transcript, token, skipSave, tts, scratchpad, trigger } = await req.json();
+    if (!aiTurnAllowed(ip, interviewId)) {
+      return new Response(JSON.stringify({ error: "Too many requests" }), { status: 429 });
+    }
     const ttsEnabled = tts !== false; // candidate can turn the AI voice off (text-only)
     if (!interviewId) {
       return new Response(JSON.stringify({ error: "Missing interviewId" }), { status: 400 });
@@ -32,9 +35,9 @@ export async function POST(req: Request) {
     }
 
     // Parallel: interview + violations + heartbeat
-    const [interview, violations, hbResult] = await Promise.all([
+    const [interview, { s: settings, v: violations }, hbResult] = await Promise.all([
       getInterview(interviewId),
-      getProctoringViolationCount(interviewId),
+      getInterviewSettings(interviewId).then((s) => getProctoringViolationCount(interviewId, disabledEventTypes(s)).then((v) => ({ s, v }))),
       pool.query("SELECT last_heartbeat_at FROM interviews WHERE id = $1", [interviewId]),
     ]);
 
@@ -45,7 +48,7 @@ export async function POST(req: Request) {
       return new Response(JSON.stringify({ error: "Interview already completed" }), { status: 400 });
     }
 
-    const MAX_STRIKES = parseInt(process.env.MAX_PROCTORING_STRIKES || process.env.NEXT_PUBLIC_MAX_PROCTORING_STRIKES || "25");
+    const MAX_STRIKES = effectiveMaxStrikes(settings);
     console.log(`[Proctoring] Interview ${interviewId}: violations=${violations}/${MAX_STRIKES}`);
     if (violations >= MAX_STRIKES) {
       return new Response(JSON.stringify({ error: "Interview terminated" }), { status: 403 });
@@ -173,8 +176,14 @@ export async function POST(req: Request) {
           const ttsPromises: Promise<void>[] = [];
 
           const processSentence = (sentence: string) => {
-            const cleaned = stripMarkers(stripThinking(sentence));
+            let cleaned = stripMarkers(stripThinking(sentence));
             if (!cleaned) return;
+            if (dsaPrep) {
+              // Never speak a sentence that gives the answer away or confirms one (see lib/reveal-guard.ts)
+              const guarded = guardSentence(cleaned, { locked: dsaPrep.lockedPhrases });
+              if (guarded === null) { console.warn(`[RevealGuard] ${interviewId}: dropped a sentence`); return; }
+              cleaned = guarded;
+            }
             const idx = sentenceIdx++;
 
             // Send original text for transcript
@@ -236,6 +245,8 @@ export async function POST(req: Request) {
 
           // Flush remaining buffer
           if (buffer.trim()) processSentence(buffer.trim());
+          // The guard cut everything: say something neutral rather than nothing.
+          if (dsaPrep && sentenceIdx === 0 && stripMarkers(stripThinking(fullText)).trim()) processSentence(NEUTRAL_FALLBACK);
 
           // Wait for all parallel TTS to complete
           console.log(`[Stream] AI done for ${interviewId} in ${Date.now() - startTime}ms (${sentenceIdx} sentences, waiting for TTS...)`);

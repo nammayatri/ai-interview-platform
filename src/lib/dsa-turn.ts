@@ -33,6 +33,8 @@ import { phaseMaterial } from "./phase-config";
 import { LIMITS, type Hint } from "./runbook";
 import { addTranscriptEntry, getPhaseTranscript, type Interview, type TranscriptEntry } from "./store";
 import { pool } from "./db";
+import { guardReply, lockedPhrases, withLockedPhrases } from "./reveal-guard";
+import type { PuzzlePhaseConfig } from "./runbook";
 
 export interface DsaTurnInput {
   /** The candidate's new message. Saved to the transcript unless skipSave. */
@@ -54,6 +56,8 @@ export interface DsaTurnPrep {
   expectAssess: boolean;
   /** Set when the hard cap moved the interview to the next phase before this turn. */
   priorTransition: PhaseTransition | null;
+  /** Phrases the interviewer may not say this turn (the candidate has not said them yet); the reply is cut if it does. */
+  lockedPhrases: string[];
 }
 
 export interface PhaseInfo {
@@ -154,6 +158,12 @@ export async function prepareDsaTurn(interview: Interview, input: DsaTurnInput):
   const settings = await getOrgAISettings(interview.orgId);
   let messages = buildInterviewPrompt(enriched, promptHistory as TranscriptEntry[], settings, { resolution, unlockedHint, scratchpad });
 
+  // Phrases that would give the answer away stay locked until the candidate says them.
+  const locked = phase && phase.phaseKey === "puzzle"
+    ? lockedPhrases((phase.config as PuzzlePhaseConfig).selected?.runbook.noReveal, history.filter((h) => h.role === "candidate").map((h) => h.text))
+    : [];
+  messages = withLockedPhrases(messages, locked);
+
   // Hidden answer check (only when the candidate really answered: not a silence nudge or a phase opening)
   const lastRow = history[history.length - 1];
   if (phase && !ephemeral && input.trigger !== "phase_open" && lastRow && lastRow.role === "candidate" && history.length >= 2) {
@@ -169,6 +179,7 @@ export async function prepareDsaTurn(interview: Interview, input: DsaTurnInput):
     unlockedHint,
     expectAssess: !!phase && !ephemeral && !!last && last.role === "candidate",
     priorTransition,
+    lockedPhrases: locked,
   };
 }
 
@@ -192,7 +203,9 @@ export async function finalizeDsaTurn(prep: DsaTurnPrep, raw: string): Promise<D
   const { interview, phase, resolution } = prep;
   const id = interview.id;
   const markers: ParsedMarkers = parseMarkers(stripThinking(raw));
-  const text = markers.clean;
+  const guarded = guardReply(markers.clean, { locked: prep.lockedPhrases });
+  if (guarded.changed) console.warn(`[RevealGuard] ${id}: cut part of the reply (${prep.lockedPhrases.length} locked phrases)`);
+  const text = guarded.text;
   const phaseKey = phase ? phase.phaseKey : null;
 
   // The AI may close the interview in the final minutes, or when no phase is left to run.
@@ -208,6 +221,8 @@ export async function finalizeDsaTurn(prep: DsaTurnPrep, raw: string): Promise<D
   let transition: PhaseTransition | null = null;
 
   if (phase) {
+    // Which stage of the puzzle the interviewer has just presented (for the live view of a running batch).
+    if (markers.stage) await logEvent(pool, id, phaseKey, "stage", { label: markers.stage });
     const d = decideMarkers(markers, {
       unlockedHintOrder: prep.unlockedHint ? prep.unlockedHint.order : null,
       elapsedInPhaseMin: resolution.elapsedInPhaseMin,

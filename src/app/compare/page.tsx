@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { DashboardLayout } from "@/components/DashboardLayout";
 
+import { toHundred } from "@/lib/score-scale";
 interface Scorecard {
   scores: { dimension: string; score: number }[];
   overall: number;
@@ -74,7 +75,7 @@ function RadarChart({ candidates }: { candidates: { label: string; scores: { dim
 
   const getPoint = (index: number, value: number) => {
     const angle = angleStep * index - Math.PI / 2;
-    const r = (value / 5) * radius;
+    const r = ((toHundred(value) ?? 0) / 100) * radius;
     return { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
   };
 
@@ -331,7 +332,7 @@ export default function ComparePage() {
                 >
                   <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: COLORS[i] }} />
                   {displayName(interview)}
-                  <span className="text-indigo-400 ml-0.5">{interview.scorecard?.overall}/5</span>
+                  <span className="text-indigo-400 ml-0.5">{toHundred(interview.scorecard?.overall)}/100</span>
                   <svg className="w-3 h-3 text-indigo-400 hover:text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                   </svg>
@@ -512,7 +513,7 @@ export default function ComparePage() {
                         </div>
                         {interview.scorecard && (
                           <span className={`text-sm font-bold ${scoreColor(interview.scorecard.overall)}`}>
-                            {interview.scorecard.overall}/5
+                            {toHundred(interview.scorecard.overall)}/100
                           </span>
                         )}
                       </div>
@@ -625,7 +626,7 @@ export default function ComparePage() {
                                       <circle cx="18" cy="18" r="14" fill="none"
                                         stroke={scoreBg(interview.scorecard.overall)}
                                         strokeWidth="3" strokeLinecap="round"
-                                        strokeDasharray={`${(interview.scorecard.overall / 5) * 87.96} 87.96`}
+                                        strokeDasharray={`${((toHundred(interview.scorecard.overall) ?? 0) / 100) * 87.96} 87.96`}
                                       />
                                     </svg>
                                     <span className={`absolute inset-0 flex items-center justify-center text-[10px] font-bold ${scoreColor(interview.scorecard.overall)}`}>
@@ -786,8 +787,8 @@ export default function ComparePage() {
                           </h4>
                         </div>
                         <div className="flex items-center gap-2 mb-2">
-                          <span className="text-2xl font-bold text-gray-900">{sc.overall}</span>
-                          <span className="text-sm text-gray-500">/5</span>
+                          <span className="text-2xl font-bold text-gray-900">{toHundred(sc.overall)}</span>
+                          <span className="text-sm text-gray-500">/100</span>
                           {isBest && (
                             <span className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
                               <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5z" /></svg>
@@ -819,7 +820,7 @@ export default function ComparePage() {
                                 <span className={`font-medium ${
                                   isBestDim ? "text-green-600" : isWorstDim ? "text-red-600" : "text-gray-700"
                                 }`}>
-                                  {s.score}/5
+                                  {toHundred(s.score)}/100
                                 </span>
                               </div>
                               <div className="h-1.5 rounded-full bg-gray-100">
@@ -827,7 +828,7 @@ export default function ComparePage() {
                                   className={`h-full rounded-full transition-all duration-700 ease-out ${
                                     isBestDim ? "bg-green-500" : isWorstDim ? "bg-red-500" : "bg-indigo-500"
                                   }`}
-                                  style={{ width: `${(s.score / 5) * 100}%` }}
+                                  style={{ width: `${toHundred(s.score) ?? 0}%` }}
                                 />
                               </div>
                             </div>
@@ -871,7 +872,7 @@ export default function ComparePage() {
                   </div>
                   <p className="text-sm text-gray-600">
                     Based on overall scores, <span className="text-green-700 font-semibold">{displayName(bestCandidate)}</span> is
-                    the strongest candidate with an overall score of <span className="text-gray-900 font-semibold">{bestCandidate.scorecard?.overall}/5</span>.
+                    the strongest candidate with an overall score of <span className="text-gray-900 font-semibold">{toHundred(bestCandidate.scorecard?.overall)}/100</span>.
                     {bestCandidate.scorecard?.recommendation && (
                       <> Recommendation: <span className="text-green-700">{bestCandidate.scorecard.recommendation.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}</span>.</>
                     )}
@@ -884,7 +885,7 @@ export default function ComparePage() {
                           <div key={interview.id} className="flex items-center gap-2 text-xs text-gray-500">
                             <span className="font-semibold text-gray-700">#{i + 1}</span>
                             <span>{displayName(interview)}</span>
-                            <span className="text-gray-400">({interview.scorecard?.overall}/5)</span>
+                            <span className="text-gray-400">({toHundred(interview.scorecard?.overall)}/100)</span>
                           </div>
                         ))}
                     </div>

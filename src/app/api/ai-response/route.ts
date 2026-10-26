@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
+import { disabledEventTypes, effectiveMaxStrikes } from "@/lib/batch-settings";
+import { getInterviewSettings } from "@/lib/interview-settings";
 import { getInterview, addTranscriptEntry, getProctoringViolationCount, updateInterview } from "@/lib/store";
 import { getAIResponse } from "@/lib/ai";
-import { rateLimit } from "@/lib/rate-limit";
+import { aiTurnAllowed } from "@/lib/rate-limit";
 import { canEndNow, getRemainingSeconds } from "@/lib/interview-time";
 import { validateAccessPost } from "@/lib/auth-check";
 import { pool } from "@/lib/db";
@@ -12,10 +14,10 @@ import { finishInterview } from "@/lib/scoring/background";
 export async function POST(req: Request) {
   try {
     const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
-    if (!rateLimit(ip, 30, 60000)) {
+    const { interviewId, transcript, token, scratchpad, trigger } = await req.json();
+    if (!aiTurnAllowed(ip, interviewId)) {
       return NextResponse.json({ error: "Too many requests" }, { status: 429 });
     }
-    const { interviewId, transcript, token, scratchpad, trigger } = await req.json();
 
     if (!interviewId) {
       return NextResponse.json({ error: "Missing interviewId" }, { status: 400 });
@@ -34,8 +36,9 @@ export async function POST(req: Request) {
     }
 
     // Server-side proctoring enforcement
-    const MAX_STRIKES = parseInt(process.env.MAX_PROCTORING_STRIKES || process.env.NEXT_PUBLIC_MAX_PROCTORING_STRIKES || "25");
-    const violations = await getProctoringViolationCount(interviewId);
+    const settings = await getInterviewSettings(interviewId);
+    const MAX_STRIKES = effectiveMaxStrikes(settings);
+    const violations = await getProctoringViolationCount(interviewId, disabledEventTypes(settings));
     if (violations >= MAX_STRIKES) {
       await updateInterview(interviewId, { status: "completed", endedAt: new Date().toISOString() });
       return NextResponse.json({ error: "Interview terminated due to proctoring violations" }, { status: 403 });

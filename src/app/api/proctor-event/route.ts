@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { addProctoringEvent } from "@/lib/store";
 import { validateAccessPost } from "@/lib/auth-check";
+import { eventEnabled } from "@/lib/batch-settings";
+import { getInterviewSettings } from "@/lib/interview-settings";
 
 export async function POST(req: Request) {
   try {
@@ -48,6 +50,12 @@ export async function POST(req: Request) {
 
     if (!(await validateAccessPost(interviewId, token))) {
       return NextResponse.json({ error: "Invalid interview" }, { status: 403 });
+    }
+
+    // A check the batch switched off records nothing, even from a browser that has not heard about the change yet.
+    // (violation_photo is the snapshot taken with a violation; it follows the event it belongs to.)
+    if (type !== "violation_photo" && !eventEnabled(await getInterviewSettings(interviewId), type)) {
+      return NextResponse.json({ ok: true, ignored: true });
     }
 
     await addProctoringEvent(interviewId, {

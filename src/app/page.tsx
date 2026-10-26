@@ -8,6 +8,7 @@ import { useSession } from "next-auth/react";
 import Link from "next/link";
 import { DashboardLayout } from "@/components/DashboardLayout";
 
+import { toHundred } from "@/lib/score-scale";
 interface Scorecard {
   technicalDepth: number;
   communication: number;
@@ -396,7 +397,7 @@ export default function DashboardPage() {
       completed: interviews.filter((i) => i.status === "completed").length,
       avgScore:
         scored.length > 0
-          ? (scored.reduce((s, i) => s + (i.scorecard?.overall ?? 0), 0) / scored.length).toFixed(1)
+          ? String(Math.round(scored.reduce((s, i) => s + (toHundred(i.scorecard?.overall) ?? 0), 0) / scored.length))
           : "-",
     };
   }, [interviews]);
@@ -418,7 +419,7 @@ export default function DashboardPage() {
       i.role,
       i.level,
       i.status,
-      i.scorecard?.overall ?? "",
+      toHundred(i.scorecard?.overall) ?? "",
       i.scorecard?.recommendation ?? "",
       i.createdAt ? new Date(i.createdAt).toLocaleDateString() : "",
     ]);
@@ -727,7 +728,7 @@ export default function DashboardPage() {
                       <span>{interview.duration} min</span>
                       {interview.scorecard && (
                         <span className={`font-medium ${scoreColor(interview.scorecard.overall)}`}>
-                          {interview.scorecard.overall}/5
+                          {toHundred(interview.scorecard.overall)}/100
                         </span>
                       )}
                       {(flagCount > 0 || warningCount > 0) && (
@@ -820,11 +821,11 @@ export default function DashboardPage() {
                                     <circle cx="18" cy="18" r="14" fill="none"
                                       stroke={interview.scorecard.overall >= 3.5 ? "#22c55e" : interview.scorecard.overall >= 2.5 ? "#f59e0b" : "#ef4444"}
                                       strokeWidth="3" strokeLinecap="round"
-                                      strokeDasharray={`${(interview.scorecard.overall / 5) * 87.96} 87.96`}
+                                      strokeDasharray={`${((toHundred(interview.scorecard.overall) ?? 0) / 100) * 87.96} 87.96`}
                                     />
                                   </svg>
                                   <span className={`absolute inset-0 flex items-center justify-center text-[10px] font-bold ${scoreColor(interview.scorecard.overall)}`}>
-                                    {interview.scorecard.overall}
+                                    {toHundred(interview.scorecard.overall)}
                                   </span>
                                 </div>
                               </div>

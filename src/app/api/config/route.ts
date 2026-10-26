@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { maxProctoringStrikes, proctoringEnforced } from "@/lib/proctoring-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -7,7 +8,9 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   return NextResponse.json({
     // Proctoring
-    maxProctoringStrikes: parseInt(process.env.MAX_PROCTORING_STRIKES || process.env.NEXT_PUBLIC_MAX_PROCTORING_STRIKES || "25"),
+    // PROCTORING_ENFORCE=false: no interview is ended for strikes and the candidate sees no strike counter or ban.
+    proctoringEnforced: proctoringEnforced(),
+    maxProctoringStrikes: maxProctoringStrikes(),
 
     // STT
     sttProviders: (process.env.STT_CLIENT_PROVIDERS || "deepgram,browser").split(",").map(s => s.trim()),

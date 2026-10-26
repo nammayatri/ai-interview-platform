@@ -6,6 +6,7 @@ import { isPauseRequest, PAUSE_GRACE_MS } from "@/lib/pause-detect";
 import { isTalkShortcut } from "@/lib/push-to-talk";
 import { AudioRecorder } from "./AudioRecorder";
 import { ScreenShare } from "./ScreenShare";
+import { PROCTORING_CHECKS, type CandidateProctoring } from "@/lib/batch-settings";
 import Proctoring from "./Proctoring";
 import { formatCountdown } from "@/lib/countdown";
 import { ResizeHandle } from "./ResizeHandle";
@@ -32,6 +33,8 @@ interface InterviewData {
   roundType?: string;
   /** Set when the interview was registered through a batch join link. */
   batch?: { name: string; phase: "not_open" | "open" | "live" | "closed"; startsAt: string; closesAt: string; serverNow: string };
+  /** The proctoring rules of this interview's batch (they can change while the interview runs). */
+  proctoringRules?: CandidateProctoring;
 }
 
 interface ProctoringAlert {
@@ -237,11 +240,13 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   const [aiError, setAiError] = useState(false);
   const [aiStalled, setAiStalled] = useState(false); // the AI has not replied to the candidate's last message
   const lastTranscriptRef = useRef<TranscriptEntry[]>([]);
+  const lastAIOptionsRef = useRef<{ skipSave?: boolean; trigger?: "phase_open" } | undefined>(undefined);
 
   // Runtime config from /api/config — avoids NEXT_PUBLIC_* build-time baking
   // Default must be HIGH to avoid false terminations before config loads
   const [runtimeConfig, setRuntimeConfig] = useState({
     maxProctoringStrikes: 999,
+    proctoringEnforced: true,
     sttProviders: ["deepgram", "browser"] as ("deepgram" | "browser")[],
     sttBackend: "deepgram",
     sttAudio: "webm" as "webm" | "pcm16",
@@ -251,11 +256,38 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   });
   useEffect(() => {
     fetch("/api/config").then(r => r.json()).then(cfg => {
-      setRuntimeConfig(prev => ({ ...prev, ...cfg }));
+      // The batch's own rules (rulesRef) win over the environment defaults in /api/config, whichever arrives first.
+      setRuntimeConfig(prev => {
+        const merged = { ...prev, ...cfg };
+        const r = rulesRef.current;
+        return r ? { ...merged, proctoringEnforced: r.enforce, maxProctoringStrikes: r.enforce ? r.maxStrikes : Number.MAX_SAFE_INTEGER, allowMediaToggle: r.allowMediaToggle } : merged;
+      });
       if (cfg.autoVoiceEnabled !== false && cfg.defaultVoiceMode === "auto") setManualPref(false);
       console.log(`[Config] STT=${cfg.sttBackend} strikes=${cfg.maxProctoringStrikes} silence=${cfg.silenceDelayMs}ms env=${cfg.environment}`);
     }).catch(() => {});
   }, []);
+
+  // Proctoring rules of this interview (from its batch). Loaded with the interview and refreshed by every heartbeat,
+  // so an admin's change reaches a running interview within seconds. null = nothing set: the environment defaults above apply.
+  const [rules, setRules] = useState<CandidateProctoring | null>(null);
+  const rulesRef = useRef<CandidateProctoring | null>(null);
+  const applyRules = useCallback((r: CandidateProctoring | null | undefined) => {
+    if (!r || typeof r !== "object" || !r.checks) return;
+    const prev = rulesRef.current;
+    if (prev && JSON.stringify(prev) === JSON.stringify(r)) return;
+    rulesRef.current = r;
+    setRules(r);
+    setRuntimeConfig((c) => ({ ...c, proctoringEnforced: r.enforce, maxProctoringStrikes: r.enforce ? r.maxStrikes : Number.MAX_SAFE_INTEGER, allowMediaToggle: r.allowMediaToggle }));
+    if (!r.enforce) setShowProctoringBan(false);
+  }, []);
+  /** Is the check behind this event type switched on? Events with no check of their own always are. */
+  const eventOn = useCallback((type: string) => {
+    const r = rulesRef.current;
+    if (!r) return true;
+    const check = PROCTORING_CHECKS.find((c) => (c.events as readonly string[]).includes(type));
+    return check ? r.checks[check.key] !== false : true;
+  }, []);
+  const screenRequired = rules ? rules.checks.screenShare !== false : true;
 
   // Pre-interview checks
   const [cameraReady, setCameraReady] = useState(false);
@@ -362,6 +394,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
           return;
         }
         setInterviewData(interview);
+        applyRules(interview.proctoringRules);
         if (interview.batch?.serverNow) setClockOffsetMs(new Date(interview.batch.serverNow).getTime() - Date.now());
         if (interview.roundType === "DSA Review") dsaRef.current.load(interview, { initialScratchpad: true });
 
@@ -412,7 +445,8 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
               fetch(`/api/interview/${interviewId}/violations${tokenParam}`),
               fetch("/api/config").then(r => r.json()).catch(() => null),
             ]);
-            const maxStrikes = cfgRes?.maxProctoringStrikes || 25;
+            const r = interview.proctoringRules as CandidateProctoring | undefined;
+            const maxStrikes = r ? (r.enforce ? r.maxStrikes : Number.MAX_SAFE_INTEGER) : (cfgRes?.proctoringEnforced === false ? Number.MAX_SAFE_INTEGER : (cfgRes?.maxProctoringStrikes || 25));
             if (violationRes.ok) {
               const { count } = await violationRes.json();
               // Apply time-based decay: subtract 0.5 for every 5 minutes since interview started
@@ -556,12 +590,12 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ interviewId, token: tokenRef.current }),
-      }).catch(() => {});
+      }).then((r) => (r.ok ? r.json() : null)).then((j) => applyRules(j?.proctoringRules)).catch(() => {});
     };
     sendHeartbeat(); // Send immediately on start
     const interval = setInterval(sendHeartbeat, 15000);
     return () => clearInterval(interval);
-  }, [isStarted, interviewId]);
+  }, [isStarted, interviewId, applyRules]);
 
   // Time warning at 60s
   useEffect(() => {
@@ -767,6 +801,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       setIsAIThinking(true);
       setAiError(false);
       lastTranscriptRef.current = currentTranscript;
+      lastAIOptionsRef.current = options;
       const thisGeneration = ++generationRef.current;
 
       // Abort any previous in-flight request
@@ -803,7 +838,13 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ interviewId, transcript: currentTranscript, token: tokenRef.current, skipSave: options?.skipSave, tts: aiVoiceRef.current, ...dsaTurnFields(options?.trigger) }),
           });
-          const data = await fallbackRes.json();
+          const data = await fallbackRes.json().catch(() => ({} as any));
+          if (!fallbackRes.ok || !data.text) {
+            // Nothing came back (rate limit, server error, empty reply): say so, so the candidate gets the Retry button.
+            serverLog("error", `AI fallback failed: ${fallbackRes.status} ${data?.error || "empty reply"}`, interviewId);
+            setAiError(true);
+            return;
+          }
           if (data.phase) dsaRef.current.applyServerPhase(data.phase);
           if (data.phaseTransition && !data.endInterview) phaseTransitionRef.current = data.phaseTransition;
           if (data.text) {
@@ -837,6 +878,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         let isPlaying = false;
         let transcriptAdded = false;
         let streamDone = false;
+        let gotDone = false;
 
         const playNext = async () => {
           // Skip over failed TTS chunks
@@ -886,6 +928,8 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
               if (data.type === "audio_skip") { skippedIdxs.add(data.idx); playNext(); }
               if (data.error) { console.error("[AI] Server error:", data.error); serverLog("error", `SSE error: ${data.error}`, interviewId); setAiError(true); }
               if (data.type === "done") {
+                gotDone = true;
+                if (!data.fullText && !transcriptAdded && !data.endInterview) { serverLog("error", "AI reply was empty", interviewId); setAiError(true); }
                 if (data.phase) dsaRef.current.applyServerPhase(data.phase);
                 if (data.phaseTransition && !data.endInterview) phaseTransitionRef.current = data.phaseTransition;
                 if (data.fullText) { setTranscript((prev) => { const u = [...prev]; if (u.length > 0 && u[u.length-1].role === "ai") u[u.length-1] = { ...u[u.length-1], text: data.fullText }; return u; }); }
@@ -909,6 +953,8 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         }
 
         streamDone = true;
+        // The stream closed without a final message: the connection dropped or the server gave up part way.
+        if (!gotDone) { serverLog("error", "AI stream ended without a result", interviewId); setAiError(true); }
         let waitCount = 0;
         while ((audioMap.size > 0 || isPlaying) && waitCount < 200) { await new Promise((r) => setTimeout(r, 100)); waitCount++; }
         setIsAISpeaking(false); isAISpeakingRef.current = false; setCurrentAIText("");
@@ -1024,6 +1070,24 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     lastActivityRef.current = Date.now();
     serverLog("info", "AI nudged by candidate", interviewId);
     getAIResponseRef.current?.(transcriptRef.current);
+  }, [interviewId]);
+
+  // Retry after a failed reply: drop whatever is stuck and ask again with the same kind of turn (a phase opening stays a
+  // phase opening; a silence nudge is retried on the real conversation instead of its placeholder line).
+  const retryAI = useCallback(() => {
+    if (isEndingRef.current) return;
+    setAiError(false);
+    setAiStalled(false);
+    activeAbortRef.current?.abort();
+    generationRef.current++; // the aborted request must not reset the state of the new one
+    isProcessingRef.current = false;
+    queuedEntriesRef.current = [];
+    setIsAIThinking(false);
+    lastActivityRef.current = Date.now();
+    serverLog("info", "AI retry clicked", interviewId);
+    const opts = lastAIOptionsRef.current;
+    if (opts?.trigger) getAIResponseRef.current?.(lastTranscriptRef.current, { trigger: opts.trigger });
+    else getAIResponseRef.current?.(transcriptRef.current);
   }, [interviewId]);
 
   // Silence watchdog — if no activity for 90s AND no interim speech, nudge AI
@@ -1241,7 +1305,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     if (videoTrack) {
       videoTrack.enabled = !videoTrack.enabled;
       setCameraEnabled(videoTrack.enabled);
-      if (!videoTrack.enabled) {
+      if (!videoTrack.enabled && eventOn("camera_off")) {
         // First time = warning (info severity, no strike). Repeat = flag (counts as strike).
         const cameraOffCount = (window as any).__cameraOffCount = ((window as any).__cameraOffCount || 0) + 1;
         const severity = cameraOffCount <= 1 ? "info" : "flag";
@@ -1255,7 +1319,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         }).catch(() => {});
       }
     }
-  }, [interviewId]);
+  }, [interviewId, eventOn]);
 
   // Asks the browser to share the entire screen. Used by the lobby button and by the prompt shown if sharing stops mid-interview.
   const isStartedRef = useRef(false);
@@ -1293,6 +1357,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   // Proctoring callback — handles alerts from Proctoring.tsx and local events (e.g. screen_share_stopped)
   const onProctoringEvent = useCallback(
     (event: { type: string; message: string; severity?: string }) => {
+      if (!eventOn(event.type)) return; // the batch switched this check off
       // Only show toast for events that count as strikes — disabled checks are silent
       // (they still log to DB for interviewer review, just no candidate-facing toast)
       const strikeWeights: Record<string, number> = {
@@ -1347,7 +1412,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         });
       }
     },
-    [interviewId, runtimeConfig.maxProctoringStrikes]
+    [interviewId, runtimeConfig.maxProctoringStrikes, eventOn]
   );
 
   const onProctoringEventRef = useRef(onProctoringEvent);
@@ -1356,7 +1421,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
   // Sharing stopped mid-interview: ask for it again, and end the interview if it is not restored in time.
   const SHARE_GRACE_S = 30;
   const [shareCountdown, setShareCountdown] = useState(SHARE_GRACE_S);
-  const shareLost = isStarted && !screenSharing && !isMobile && !isEnding && !showProctoringBan;
+  const shareLost = screenRequired && isStarted && !screenSharing && !isMobile && !isEnding && !showProctoringBan;
   useEffect(() => {
     if (!shareLost) { setShareCountdown(SHARE_GRACE_S); return; }
     const t = setInterval(() => setShareCountdown((n) => Math.max(0, n - 1)), 1000);
@@ -1725,7 +1790,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
             <SystemCheck label="Camera" ready={cameraReady} />
             <SystemCheck label="Microphone" ready={micReady} />
             <SystemCheck label="Speaker" ready={true} />
-            <SystemCheck label="Screen Share" ready={screenSharing} />
+            <SystemCheck label="Screen Share" ready={screenSharing || !screenRequired} />
           </div>
 
           {/* Screen Share Button */}
@@ -1741,7 +1806,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
                 </svg>
                 Share Your Entire Screen
               </button>
-              <p className="text-[10px] text-zinc-500 text-center mt-1.5">Required — select "Entire Screen" when prompted</p>
+              <p className="text-[10px] text-zinc-500 text-center mt-1.5">{screenRequired ? "Required" : "Optional"} — select "Entire Screen" when prompted</p>
               {screenShareError && <p className="text-[11px] text-red-400 text-center mt-1.5">{screenShareError}</p>}
             </div>
           ) : (
@@ -1757,10 +1822,10 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         {/* Start Button */}
         <button
           onClick={handleStartInterview}
-          disabled={!cameraReady || !micReady || (!screenSharing && !isMobile) || batchWaitMs > 0}
+          disabled={!cameraReady || !micReady || (screenRequired && !screenSharing && !isMobile) || batchWaitMs > 0}
           className="glow-blue rounded-xl bg-blue-600 px-10 py-3.5 text-lg font-semibold text-white transition-all hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
         >
-          {!screenSharing && !isMobile ? "Share screen to continue" : batchWaitMs > 0 ? `Starts in ${formatCountdown(batchWaitMs)}` : "Start Interview"}
+          {screenRequired && !screenSharing && !isMobile ? "Share screen to continue" : batchWaitMs > 0 ? `Starts in ${formatCountdown(batchWaitMs)}` : "Start Interview"}
         </button>
         {startError && <p className="max-w-md text-center text-sm text-red-400" role="alert">{startError}</p>}
       </div>
@@ -2224,12 +2289,9 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
             AI not replying? Nudge
           </button>
         )}
-        {aiError && !isProcessingRef.current && (
+        {aiError && (
           <button
-            onClick={() => {
-              setAiError(false);
-              getAIResponse(lastTranscriptRef.current);
-            }}
+            onClick={retryAI}
             className="rounded-full bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-all hover:bg-blue-500 animate-pulse"
           >
             Retry AI
@@ -2244,7 +2306,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       </div>
 
       {/* Proctoring Warning Counter */}
-      {proctoringWarnings > 0 && !showProctoringBan && (
+      {runtimeConfig.proctoringEnforced && (rules?.showWarnings ?? true) && proctoringWarnings > 0 && !showProctoringBan && (
         <div className="fixed left-1/2 -translate-x-1/2 top-16 z-50">
           <div className={`flex items-center gap-3 rounded-xl px-5 py-3 shadow-lg border ${
             proctoringWarnings >= 2
@@ -2261,7 +2323,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
               ))}
             </div>
             <span className={`text-sm font-medium ${proctoringWarnings >= 3 ? "text-red-200" : "text-yellow-200"}`}>
-              Warning {proctoringWarnings}/{runtimeConfig.maxProctoringStrikes} — {proctoringWarnings >= runtimeConfig.maxProctoringStrikes - 1 ? "Next violation will end the interview" : "Please stay focused and look at the screen"}
+              Warning {proctoringWarnings}{runtimeConfig.maxProctoringStrikes < 100 ? `/${runtimeConfig.maxProctoringStrikes}` : ""} — {proctoringWarnings >= runtimeConfig.maxProctoringStrikes - 1 ? "Next violation will end the interview" : "Please stay focused and look at the screen"}
             </span>
           </div>
         </div>
@@ -2315,6 +2377,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
         interviewId={interviewId}
         enabled={isStarted && !isEndingRef.current}
         onAlert={onProctoringEvent}
+        isEventEnabled={eventOn}
         token={tokenRef.current}
       />
 

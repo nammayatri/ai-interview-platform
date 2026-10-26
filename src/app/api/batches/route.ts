@@ -6,6 +6,7 @@ import { loadStagedInput } from "@/lib/staged-interview";
 import { batchPhase, newJoinCode, readStoredStages, validateBatchInput } from "@/lib/batches";
 import { stagesDuration, type StagePlan } from "@/lib/runbook";
 import { mapBatch, queryBatches } from "@/lib/batches-api";
+import { validateBatchSettings } from "@/lib/batch-settings";
 
 export async function GET(req: Request) {
   const auth = await requireRole(req, ANY_ROLE);
@@ -20,6 +21,14 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
   const v = validateBatchInput(body);
   if (!v.ok) return NextResponse.json({ error: v.errors[0], errors: v.errors }, { status: 400 });
+
+  // Optional settings at creation (proctoring rules, passing mark); omitted = the defaults.
+  let settingsJson: string | null = null;
+  if (body && typeof body === "object" && (body as any).settings !== undefined) {
+    const sv = validateBatchSettings((body as any).settings);
+    if (!sv.ok) return NextResponse.json({ error: sv.errors[0], errors: sv.errors }, { status: 400 });
+    settingsJson = JSON.stringify(sv.value);
+  }
 
   const { rows: tpl } = await pool.query("SELECT id, name, level, stages FROM interview_templates WHERE id = $1 AND org_id = $2 AND is_archived = false", [v.value.templateId, auth.user.orgId]);
   if (tpl.length === 0) return NextResponse.json({ error: "That template was not found." }, { status: 404 });
@@ -36,5 +45,13 @@ export async function POST(req: Request) {
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
     [auth.user.orgId, v.value.name, newJoinCode(), tpl[0].id, tpl[0].name, JSON.stringify(stages), tpl[0].level, v.value.role, v.value.startsAt.toISOString(), v.value.opensBeforeMin, v.value.lateEntryMin, v.value.maxCandidates, auth.user.id]
   );
+  if (settingsJson) {
+    try {
+      await pool.query("UPDATE interview_batches SET settings = $1::jsonb WHERE id = $2", [settingsJson, rows[0].id]);
+      rows[0].settings = JSON.parse(settingsJson);
+    } catch (err: any) {
+      if (err?.code !== "42703") throw err; // migration 008 not applied yet: the batch keeps the defaults
+    }
+  }
   return NextResponse.json(mapBatch({ ...rows[0], registered: 0, started: 0, completed: 0 }), { status: 201 });
 }

@@ -50,6 +50,7 @@ const emptyPuzzle = (): Draft => ({
   runbook: {
     statementMd: "",
     acceptedAnswers: [""],
+    noReveal: [],
     expectedMin: 6,
     hintLadder: [],
     rubric: [{ id: "c1", text: "", weight: 1, mapsTo: "problemSolving" }],
@@ -344,6 +345,7 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
                 ) : (
                   <Section title="Answers and timing">
                     <StringListEditor label="Accepted answers" items={rb.acceptedAnswers} onChange={(acceptedAnswers) => setRunbook({ acceptedAnswers })} placeholder="Short answer, judged by the AI (not string-matched)" />
+                    <StringListEditor label="Never say before the candidate does" items={rb.noReveal || []} onChange={(noReveal) => setRunbook({ noReveal })} placeholder="A word or phrase that gives the answer away, e.g. binary, 10 testers, grid" />
                     <NumberField label="Expected minutes" min={1} value={rb.expectedMin} onChange={(expectedMin) => setRunbook({ expectedMin })} hint="Used to decide whether the puzzle fits in the remaining time." />
                   </Section>
                 )}

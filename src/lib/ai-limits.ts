@@ -21,6 +21,10 @@ export const aiLimits = {
   scoringRetryMaxTokens: () => envInt("SUMMARY_AI_RETRY_MAX_TOKENS", 16000, 500, 64000),
   /** Scoring: how long one scoring call may take, in milliseconds. */
   scoringTimeoutMs: () => envInt("SUMMARY_AI_TIMEOUT_MS", 600000, 5000, 1800000),
+  /** Scoring: how many scoring model calls one pod runs at the same time. */
+  scoringConcurrency: () => envInt("SCORING_CONCURRENCY", 4, 1, 50),
+  /** Scoring: tries per model call when the failure looks temporary (rate limit, gateway error, dropped connection). */
+  scoringAttempts: () => envInt("SCORING_ATTEMPTS", 5, 1, 10),
   /** Live interview: tokens for one AI reply. Set AI_CHAT_MAX_TOKENS to override every call site. */
   chatMaxTokens: (fallback: number) => envInt("AI_CHAT_MAX_TOKENS", fallback, 50, 8000),
 };

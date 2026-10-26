@@ -6,6 +6,8 @@ import { interviewExpiry, MAX_LATE_ENTRY_MIN, MAX_OPENS_BEFORE_MIN, MAX_BATCH_CA
 import { stagesDuration } from "@/lib/runbook";
 import { mapBatch, queryBatches } from "@/lib/batches-api";
 import { listInvites } from "@/lib/batch-invites";
+import { disabledEventTypes, normalizeBatchSettings, validateBatchSettings } from "@/lib/batch-settings";
+import { loadLiveStatus } from "@/lib/batch-live";
 
 async function loadBatch(id: string, orgId: string) {
   const rows = await queryBatches("b.id = $1 AND b.org_id = $2", [id, orgId]);
@@ -28,6 +30,12 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
      FROM interviews i WHERE i.batch_id = $1 ORDER BY i.created_at DESC LIMIT 5000`,
     [id]
   );
+  // Candidates who are in the test right now: which stage they are in, whether they are still connected, their strikes.
+  const running = rows.filter((r) => r.status === "in_progress").map((r) => r.id as string);
+  const live = await loadLiveStatus(running, disabledEventTypes(normalizeBatchSettings(b.settings))).catch((err) => {
+    console.error("[Batch] live status failed:", err?.message || err);
+    return new Map();
+  });
   let invites: Awaited<ReturnType<typeof listInvites>> = [];
   try { invites = await listInvites(id); } catch (err: any) { if (err?.code !== "42P01") throw err; } // migration 007 not applied yet
   return NextResponse.json({
@@ -50,6 +58,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       overall: r.overall !== null && r.overall !== undefined ? Number(r.overall) : null,
       flags: Number(r.flags ?? 0),
       warnings: Number(r.warnings ?? 0),
+      live: live.get(r.id) ?? null,
     })),
   });
 }
@@ -95,6 +104,16 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   let isClosed: boolean = current.is_closed;
   if (body.isClosed !== undefined) isClosed = body.isClosed === true;
   const archiveChange = body.isArchived !== undefined ? body.isArchived === true : null;
+  // Settings (proctoring rules, passing mark): a partial object is merged onto what the batch has now.
+  let newSettings: ReturnType<typeof normalizeBatchSettings> | null = null;
+  if (body.settings !== undefined) {
+    const cur = normalizeBatchSettings(current.settings);
+    const inc = body.settings && typeof body.settings === "object" ? body.settings : {};
+    const merged = { ...cur, ...inc, proctoring: { ...cur.proctoring, ...(inc.proctoring && typeof inc.proctoring === "object" ? inc.proctoring : {}), checks: { ...cur.proctoring.checks, ...(inc.proctoring?.checks && typeof inc.proctoring.checks === "object" ? inc.proctoring.checks : {}) } } };
+    const sv = validateBatchSettings(body.settings && typeof body.settings === "object" ? merged : body.settings);
+    if (!sv.ok) errors.push(...sv.errors);
+    else newSettings = sv.value;
+  }
   if (errors.length) return NextResponse.json({ error: errors[0], errors }, { status: 400 });
 
   const duration = stagesDuration(current.stages || []);
@@ -111,9 +130,11 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       id,
     ]);
     if (archiveChange !== null) await client.query("UPDATE interview_batches SET is_archived = $1 WHERE id = $2", [archiveChange, id]);
+    if (newSettings) await client.query("UPDATE interview_batches SET settings = $1::jsonb, updated_at = NOW() WHERE id = $2", [JSON.stringify(newSettings), id]);
     await client.query("COMMIT");
-  } catch (err) {
+  } catch (err: any) {
     await client.query("ROLLBACK").catch(() => {});
+    if (err?.code === "42703") return NextResponse.json({ error: "Batch settings need migration 008_batch_settings.sql to be applied first." }, { status: 409 });
     throw err;
   } finally {
     client.release();
