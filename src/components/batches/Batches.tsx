@@ -3,15 +3,15 @@
 // Interview batches: one shared join link for many candidates. The list/create page and the detail page.
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { DEFAULT_LATE_ENTRY_MIN, DEFAULT_OPENS_BEFORE_MIN } from "@/lib/batches-defaults";
 import { StageChips, type TemplateRow } from "@/components/templates/TemplatesPage";
 import { CandidatesTable, type BatchCandidate } from "./CandidatesTable";
-import { BatchSettingsPanel } from "./BatchSettingsPanel";
-import type { BatchSettings } from "@/lib/batch-settings";
+import { BatchSettingsPanel, BatchSettingsFields } from "./BatchSettingsPanel";
+import { defaultBatchSettings, type BatchSettings } from "@/lib/batch-settings";
 import { InviteFilePicker, InviteModal, submitInvites, summarise, type ParsedInvites } from "./InviteCandidates";
 
 type Phase = "not_open" | "open" | "live" | "closed";
@@ -95,6 +95,9 @@ export function BatchesPage() {
   const [lateEntry, setLateEntry] = useState(String(DEFAULT_LATE_ENTRY_MIN));
   const [roleName, setRoleName] = useState("Software Engineer");
   const [maxCandidates, setMaxCandidates] = useState("");
+  const [rules, setRules] = useState<BatchSettings>(() => defaultBatchSettings({}));
+  const [rulesTouched, setRulesTouched] = useState(false);
+  const rulesTouchedRef = useRef(false);
   const [parsed, setParsed] = useState<ParsedInvites | null>(null);
   const [sendEmail, setSendEmail] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -106,6 +109,15 @@ export function BatchesPage() {
       fetch("/api/interview-templates").then((r) => (r.ok ? r.json() : [])).catch(() => []),
     ]);
     setItems(b); setTemplates(t); setLoading(false);
+  }, []);
+  // The form starts from the server's defaults (the env values), so an untouched form behaves exactly as before.
+  useEffect(() => {
+    fetch("/api/config").then((r) => (r.ok ? r.json() : null)).then((c) => {
+      if (!c) return;
+      setRules((cur) => rulesTouchedRef.current ? cur : defaultBatchSettings({
+        PROCTORING_ENFORCE: String(c.proctoringEnforced), MAX_PROCTORING_STRIKES: String(c.maxProctoringStrikes), ALLOW_MEDIA_TOGGLE: String(c.allowMediaToggle),
+      }));
+    }).catch(() => {});
   }, []);
   useEffect(() => { load(); const i = setInterval(load, 30000); return () => clearInterval(i); }, [load]);
 
@@ -124,6 +136,7 @@ export function BatchesPage() {
         body: JSON.stringify({
           name, templateId, role: roleName, startsAt: new Date(startsAt).toISOString(),
           opensBeforeMin: Number(opensBefore), lateEntryMin: Number(lateEntry), maxCandidates: maxCandidates === "" ? null : Number(maxCandidates),
+          ...(rulesTouched ? { settings: rules } : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -294,6 +307,15 @@ export function BatchesPage() {
                 <input type="number" min={1} className="input-field" value={maxCandidates} onChange={(e) => setMaxCandidates(e.target.value)} placeholder="No limit" />
               </div>
             </div>
+            <details className="rounded-lg border border-gray-200 p-3">
+              <summary className="cursor-pointer text-sm font-medium text-gray-900">
+                Test rules and proctoring <span className="font-normal text-gray-500">· pass mark {rules.passMark}/100, {rules.proctoring.enforce ? `ends at ${rules.proctoring.maxStrikes} strikes` : "no removal for strikes"}</span>
+              </summary>
+              <div className="mt-4">
+                <BatchSettingsFields value={rules} canEdit onChange={(fn) => { rulesTouchedRef.current = true; setRulesTouched(true); setRules(fn); }} />
+                <p className="mt-3 text-xs text-gray-500">You can change these later on the batch page, even while candidates are taking the test.</p>
+              </div>
+            </details>
             <div className="space-y-3 border-t border-gray-100 pt-4">
               <div>
                 <p className="text-sm font-medium text-gray-900">Invite candidates <span className="font-normal text-gray-400">(optional, you can do this later)</span></p>

@@ -17,6 +17,48 @@ function Toggle({ checked, onChange, label, help, disabled }: { checked: boolean
   );
 }
 
+/** The pass mark and the proctoring switches. Used by the batch page and by the create-batch form. */
+export function BatchSettingsFields({ value, canEdit, onChange }: { value: BatchSettings; canEdit: boolean; onChange: (fn: (d: BatchSettings) => BatchSettings) => void }) {
+  const draft = value;
+  const change = onChange;
+  const setProctoring = (patch: Partial<BatchSettings["proctoring"]>) => change((d) => ({ ...d, proctoring: { ...d.proctoring, ...patch } }));
+  return (
+    <div className="space-y-5">
+      <div>
+        <label className="label">Passing mark (out of 100)</label>
+        <input type="number" min={0} max={100} className="input-field w-32" disabled={!canEdit} value={draft.passMark}
+          onChange={(e) => change((d) => ({ ...d, passMark: Math.max(0, Math.min(100, Math.round(Number(e.target.value) || 0))) }))} />
+        <p className="mt-1 text-xs text-gray-500">A candidate whose overall score is at or above this passes. 50 is the old "hire" line (3.0 out of 5).</p>
+      </div>
+
+      <div className="space-y-3">
+        <p className="text-sm font-medium text-gray-900">Strikes</p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Toggle disabled={!canEdit} checked={draft.proctoring.enforce} onChange={(v) => setProctoring({ enforce: v })} label="End the interview at the strike limit" help="Off: violations are still recorded for you to review, but nobody is removed." />
+          <Toggle disabled={!canEdit} checked={draft.proctoring.showWarnings} onChange={(v) => setProctoring({ showWarnings: v })} label="Show warnings to the candidate" help="The yellow “Warning” banner during the test." />
+        </div>
+        <div>
+          <label className="label">Strike limit</label>
+          <input type="number" min={1} max={100000} className="input-field w-32" disabled={!canEdit || !draft.proctoring.enforce} value={draft.proctoring.maxStrikes}
+            onChange={(e) => setProctoring({ maxStrikes: Math.max(1, Math.min(100000, Math.round(Number(e.target.value) || 1))) })} />
+          <p className="mt-1 text-xs text-gray-500">Each violation adds a weight (a second person in the camera counts 1, leaving fullscreen 0.25).</p>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <p className="text-sm font-medium text-gray-900">Checks <span className="font-normal text-gray-500">(switch one off and it is not recorded and does not count)</span></p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {PROCTORING_CHECKS.map((c) => (
+            <Toggle key={c.key} disabled={!canEdit} checked={draft.proctoring.checks[c.key]} onChange={(v) => setProctoring({ checks: { ...draft.proctoring.checks, [c.key]: v } })} label={c.label} help={c.help} />
+          ))}
+          <Toggle disabled={!canEdit} checked={draft.proctoring.allowMediaToggle} onChange={(v) => setProctoring({ allowMediaToggle: v })} label="Candidate can mute the mic or stop the video" help="Off removes the Mute and Stop Video buttons." />
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
 export function BatchSettingsPanel({ settings, canEdit, running, onSave }: {
   settings: BatchSettings;
   canEdit: boolean;
@@ -35,7 +77,6 @@ export function BatchSettingsPanel({ settings, canEdit, running, onSave }: {
   useEffect(() => { if (!dirty) setDraft(settings); }, [incoming]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const change = (fn: (d: BatchSettings) => BatchSettings) => { setDraft((d) => fn(d)); setDirty(true); setSaved(false); };
-  const setProctoring = (patch: Partial<BatchSettings["proctoring"]>) => change((d) => ({ ...d, proctoring: { ...d.proctoring, ...patch } }));
   const off = PROCTORING_CHECKS.filter((c) => !settings.proctoring.checks[c.key]).length;
 
   const save = async () => {
@@ -59,36 +100,7 @@ export function BatchSettingsPanel({ settings, canEdit, running, onSave }: {
 
       {open && (
         <div className="mt-4 space-y-5 border-t border-gray-100 pt-4">
-          <div>
-            <label className="label">Passing mark (out of 100)</label>
-            <input type="number" min={0} max={100} className="input-field w-32" disabled={!canEdit} value={draft.passMark}
-              onChange={(e) => change((d) => ({ ...d, passMark: Math.max(0, Math.min(100, Math.round(Number(e.target.value) || 0))) }))} />
-            <p className="mt-1 text-xs text-gray-500">A candidate whose overall score is at or above this passes. 50 is the old "hire" line (3.0 out of 5).</p>
-          </div>
-
-          <div className="space-y-3">
-            <p className="text-sm font-medium text-gray-900">Strikes</p>
-            <div className="grid gap-2 sm:grid-cols-2">
-              <Toggle disabled={!canEdit} checked={draft.proctoring.enforce} onChange={(v) => setProctoring({ enforce: v })} label="End the interview at the strike limit" help="Off: violations are still recorded for you to review, but nobody is removed." />
-              <Toggle disabled={!canEdit} checked={draft.proctoring.showWarnings} onChange={(v) => setProctoring({ showWarnings: v })} label="Show warnings to the candidate" help="The yellow “Warning” banner during the test." />
-            </div>
-            <div>
-              <label className="label">Strike limit</label>
-              <input type="number" min={1} max={100000} className="input-field w-32" disabled={!canEdit || !draft.proctoring.enforce} value={draft.proctoring.maxStrikes}
-                onChange={(e) => setProctoring({ maxStrikes: Math.max(1, Math.min(100000, Math.round(Number(e.target.value) || 1))) })} />
-              <p className="mt-1 text-xs text-gray-500">Each violation adds a weight (a second person in the camera counts 1, leaving fullscreen 0.25).</p>
-            </div>
-          </div>
-
-          <div className="space-y-3">
-            <p className="text-sm font-medium text-gray-900">Checks <span className="font-normal text-gray-500">(switch one off and it is not recorded and does not count)</span></p>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {PROCTORING_CHECKS.map((c) => (
-                <Toggle key={c.key} disabled={!canEdit} checked={draft.proctoring.checks[c.key]} onChange={(v) => setProctoring({ checks: { ...draft.proctoring.checks, [c.key]: v } })} label={c.label} help={c.help} />
-              ))}
-              <Toggle disabled={!canEdit} checked={draft.proctoring.allowMediaToggle} onChange={(v) => setProctoring({ allowMediaToggle: v })} label="Candidate can mute the mic or stop the video" help="Off removes the Mute and Stop Video buttons." />
-            </div>
-          </div>
+          <BatchSettingsFields value={draft} canEdit={canEdit} onChange={change} />
 
           {canEdit && (
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-4">
