@@ -274,22 +274,13 @@ async function getProctoringEventsWithPhotos(interviewId: string): Promise<Proct
   }));
 }
 
-/** Strike weight of one proctoring event (flag severity only). Must match client-side strikeWeights in InterviewRoom.tsx. */
-export const STRIKE_WEIGHT_SQL = `CASE type
-        WHEN 'face_missing' THEN 0.25
-        WHEN 'multiple_faces' THEN 1
-        WHEN 'screen_share_stopped' THEN 0.5
-        WHEN 'fullscreen_exit' THEN 0.25
-        WHEN 'window_blur' THEN 0.5
-        WHEN 'left_screen' THEN 0.5
-        WHEN 'camera_off' THEN 1
-        WHEN 'copy_attempt' THEN 0.25
-        WHEN 'paste_attempt' THEN 0.25
-        WHEN 'screenshot_attempt' THEN 0.5
-        ELSE 0
-      END`;
+/** Strike weight of one proctoring event (flag severity only): a whole number, 1 per counted violation. Must match client-side strikeWeights in InterviewRoom.tsx. */
+export const STRIKE_WEIGHT_SQL = `CASE WHEN type IN (
+        'face_missing', 'multiple_faces', 'screen_share_stopped', 'fullscreen_exit', 'window_blur',
+        'left_screen', 'camera_off', 'copy_attempt', 'paste_attempt', 'screenshot_attempt'
+      ) THEN 1 ELSE 0 END`;
 
-/** Weighted strikes. Events whose check the batch switched off do not count (pass the list when the caller already has the settings). */
+/** Strikes (one per violation). Events whose check the batch switched off do not count (pass the list when the caller already has the settings). */
 export async function getProctoringViolationCount(interviewId: string, disabledTypes?: string[]): Promise<number> {
   const disabled = disabledTypes ?? disabledEventTypes(await getInterviewSettings(interviewId));
   // Weights must match client-side strikeWeights in InterviewRoom.tsx
@@ -300,7 +291,7 @@ export async function getProctoringViolationCount(interviewId: string, disabledT
     FROM proctoring_events WHERE interview_id = $1 AND severity = 'flag' AND NOT (type = ANY($2::text[]))`,
     [interviewId, disabled]
   );
-  return parseFloat(rows[0].weighted_count);
+  return parseInt(rows[0].weighted_count, 10) || 0;
 }
 
 export async function getAllInterviews(orgId?: string): Promise<Omit<Interview, "resume">[]> {

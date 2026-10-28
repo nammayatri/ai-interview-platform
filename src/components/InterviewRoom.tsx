@@ -449,10 +449,10 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
             const maxStrikes = r ? (r.enforce ? r.maxStrikes : Number.MAX_SAFE_INTEGER) : (cfgRes?.proctoringEnforced === false ? Number.MAX_SAFE_INTEGER : (cfgRes?.maxProctoringStrikes || 25));
             if (violationRes.ok) {
               const { count } = await violationRes.json();
-              // Apply time-based decay: subtract 0.5 for every 5 minutes since interview started
+              // Apply time-based decay: forgive one strike for every 5 minutes since interview started
               const startTime = new Date(interview.startedAt).getTime();
               const elapsedMinutes = (Date.now() - startTime) / 60000;
-              const decayAmount = Math.floor(elapsedMinutes / 5) * 0.5;
+              const decayAmount = Math.floor(elapsedMinutes / 5);
               const adjustedCount = Math.max(0, count - decayAmount);
               setProctoringWarnings(adjustedCount);
               if (count >= maxStrikes) setShowProctoringBan(true);
@@ -1360,17 +1360,18 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
       if (!eventOn(event.type)) return; // the batch switched this check off
       // Only show toast for events that count as strikes — disabled checks are silent
       // (they still log to DB for interviewer review, just no candidate-facing toast)
+      // Every violation of a counted kind is one strike (a whole number). Must match STRIKE_WEIGHT_SQL in store.ts.
       const strikeWeights: Record<string, number> = {
-        face_missing: 0.25,
+        face_missing: 1,
         multiple_faces: 1,
-        screen_share_stopped: 0.5,
-        fullscreen_exit: 0.25,
-        window_blur: 0.5,
-        left_screen: 0.5,
+        screen_share_stopped: 1,
+        fullscreen_exit: 1,
+        window_blur: 1,
+        left_screen: 1,
         camera_off: 1,
-        copy_attempt: 0.25,
-        paste_attempt: 0.25,
-        screenshot_attempt: 0.5,
+        copy_attempt: 1,
+        paste_attempt: 1,
+        screenshot_attempt: 1,
       };
       const weight = strikeWeights[event.type] || 0;
       if (weight > 0) {
@@ -1478,12 +1479,12 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
     return () => clearInterval(timer);
   }, [needsFullscreenClick, fullscreenCountdown]);
 
-  // Strike decay — reduce accumulated warnings by 0.5 every 5 minutes
+  // Strike decay — forgive one strike every 5 minutes
   // This prevents early false positives from permanently harming the candidate
   useEffect(() => {
     if (!isStarted) return;
     const decay = setInterval(() => {
-      setProctoringWarnings((prev) => Math.max(0, prev - 0.5));
+      setProctoringWarnings((prev) => Math.max(0, prev - 1));
     }, 5 * 60 * 1000); // every 5 minutes
     return () => clearInterval(decay);
   }, [isStarted]);

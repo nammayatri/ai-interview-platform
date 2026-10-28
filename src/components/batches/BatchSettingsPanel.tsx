@@ -41,7 +41,7 @@ export function BatchSettingsFields({ value, canEdit, onChange }: { value: Batch
           <label className="label">Strike limit</label>
           <input type="number" min={1} max={100000} className="input-field w-32" disabled={!canEdit || !draft.proctoring.enforce} value={draft.proctoring.maxStrikes}
             onChange={(e) => setProctoring({ maxStrikes: Math.max(1, Math.min(100000, Math.round(Number(e.target.value) || 1))) })} />
-          <p className="mt-1 text-xs text-gray-500">Each violation adds a weight (a second person in the camera counts 1, leaving fullscreen 0.25).</p>
+          <p className="mt-1 text-xs text-gray-500">Every violation counts as one strike. A candidate is forgiven one strike for every 5 minutes without trouble.</p>
         </div>
       </div>
 

@@ -30,8 +30,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
      FROM interviews i WHERE i.batch_id = $1 ORDER BY i.created_at DESC LIMIT 5000`,
     [id]
   );
-  // Candidates who are in the test right now: which stage they are in, whether they are still connected, their strikes.
-  const running = rows.filter((r) => r.status === "in_progress").map((r) => r.id as string);
+  // Candidates who started: which rounds they finished, which stage they are in, whether they are still connected, their strikes.
+  const running = rows.filter((r) => r.status === "in_progress" || r.status === "completed").map((r) => r.id as string);
   const live = await loadLiveStatus(running, disabledEventTypes(normalizeBatchSettings(b.settings))).catch((err) => {
     console.error("[Batch] live status failed:", err?.message || err);
     return new Map();

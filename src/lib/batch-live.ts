@@ -8,7 +8,7 @@ export interface LiveStatus {
   phases: { key: string; status: string }[];
   /** The phase running now (parta | dsa | puzzle), or null. */
   currentPhase: string | null;
-  /** The puzzle stage the interviewer last presented (1, 1B, 2, BONUS, 3 ...), or null. */
+  /** The puzzle stage the interviewer last presented (1, 1B, 2, BONUS, 3 ...), or null. Kept after the puzzle ends. */
   stage: string | null;
   hintsUsed: number;
   lastMessageAt: string | null;
@@ -55,7 +55,7 @@ export async function loadLiveStatus(interviewIds: string[], disabledTypes: stri
   }
   for (const r of stages.rows) {
     const live = out.get(r.interview_id);
-    if (live && live.currentPhase === r.phase_key) live.stage = r.label || null;
+    if (live && r.phase_key === "puzzle") live.stage = r.label || null; // the last stage reached, kept after the puzzle ends
   }
   for (const r of activity.rows) {
     const live = out.get(r.id);
@@ -65,7 +65,7 @@ export async function loadLiveStatus(interviewIds: string[], disabledTypes: stri
   }
   for (const r of strikes.rows) {
     const live = out.get(r.interview_id);
-    if (live) live.strikes = Math.round(parseFloat(r.strikes) * 100) / 100;
+    if (live) live.strikes = Math.round(Number(r.strikes) || 0);
   }
   return out;
 }

@@ -16,6 +16,20 @@ export interface BatchCandidate {
   live?: LiveStatus | null;
 }
 
+/** "now:puzzle", "now:puzzle:2", "done:dsa", "offline": where a candidate is, from the live status. */
+function matchesRound(c: BatchCandidate, f: string): boolean {
+  const live = c.live;
+  if (f === "notstarted") return c.status === "waiting";
+  if (!live) return false;
+  if (f === "offline") return c.status === "in_progress" && live.secondsSinceHeartbeat !== null && live.secondsSinceHeartbeat > 60;
+  const [kind, phase, stage] = f.split(":");
+  const p = live.phases.find((x) => x.key === phase);
+  if (!p) return false;
+  if (kind === "done") return p.status === "completed";
+  if (kind === "now") return p.status === "active" && (!stage || (live.stage || "1") === stage);
+  return false;
+}
+
 type SortField = "date" | "score" | "status";
 
 const formatDate = (iso: string | null) =>
@@ -24,22 +38,22 @@ const PHASE_LABEL: Record<string, string> = { parta: "Part A", dsa: "DSA", puzzl
 const aiVerdict = (r: string) => r.replace(/_/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase());
 
 /** Where a running candidate is: finished phases ticked, the current one with its puzzle stage, and any sign of trouble. */
-function NowCell({ live }: { live: LiveStatus }) {
-  const offline = live.secondsSinceHeartbeat !== null && live.secondsSinceHeartbeat > 60;
+function NowCell({ live, running }: { live: LiveStatus; running: boolean }) {
+  const offline = running && live.secondsSinceHeartbeat !== null && live.secondsSinceHeartbeat > 60;
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap items-center gap-1">
         {live.phases.length === 0 && <span className="text-xs text-gray-400">Just started</span>}
-        {live.phases.map((p) => (
+        {live.phases.filter((p) => p.status !== "skipped").map((p) => (
           <span key={p.key} className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${p.status === "completed" ? "bg-green-50 text-green-700" : p.status === "active" ? "bg-blue-50 text-blue-700" : "bg-gray-100 text-gray-400"}`}>
-            {p.status === "completed" ? "✓ " : ""}{PHASE_LABEL[p.key] || p.key}{p.status === "active" && p.key === "puzzle" ? ` · Stage ${live.stage || "1"}` : ""}
+            {p.status === "completed" ? "✓ " : ""}{PHASE_LABEL[p.key] || p.key}{p.key === "puzzle" && (p.status === "active" || (p.status === "completed" && live.stage)) ? ` · Stage ${live.stage || "1"}` : ""}
           </span>
         ))}
       </div>
       <p className="text-[11px] text-gray-500">
         {live.hintsUsed > 0 ? `${live.hintsUsed} hint${live.hintsUsed === 1 ? "" : "s"} · ` : ""}
         {live.strikes > 0 ? `${live.strikes} strike${live.strikes === 1 ? "" : "s"} · ` : ""}
-        {offline ? <span className="font-medium text-red-600">no signal for {Math.round((live.secondsSinceHeartbeat as number) / 60)} min</span> : "connected"}
+        {!running ? "finished" : offline ? <span className="font-medium text-red-600">no signal for {Math.round((live.secondsSinceHeartbeat as number) / 60)} min</span> : "connected"}
       </p>
     </div>
   );
@@ -70,6 +84,7 @@ export function CandidatesTable({ candidates, batchName, passMark }: { candidate
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [verdictFilter, setVerdictFilter] = useState("all");
+  const [roundFilter, setRoundFilter] = useState("all");
   const [sortField, setSortField] = useState<SortField>("date");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
@@ -77,6 +92,14 @@ export function CandidatesTable({ candidates, batchName, passMark }: { candidate
     if (sortField === f) setSortDir((d) => (d === "desc" ? "asc" : "desc"));
     else { setSortField(f); setSortDir("desc"); }
   };
+
+  // Only the rounds this batch's template has, and the puzzle stages seen so far.
+  const rounds = useMemo(() => (["parta", "dsa", "puzzle"] as const).filter((k) => candidates.some((c) => c.live?.phases.some((p) => p.key === k && p.status !== "skipped"))), [candidates]);
+  const stages = useMemo(() => {
+    const seen = new Set<string>();
+    for (const c of candidates) if (c.status === "in_progress" && c.live?.phases.some((p) => p.key === "puzzle" && p.status === "active")) seen.add(c.live.stage || "1");
+    return Array.from(seen).sort();
+  }, [candidates]);
 
   const filtered = useMemo(() => {
     let r = candidates;
@@ -86,6 +109,7 @@ export function CandidatesTable({ candidates, batchName, passMark }: { candidate
       else if (verdictFilter === "fail") r = r.filter((c) => passVerdict(c.overall, passMark) === "fail");
       else if (verdictFilter === "unscored") r = r.filter((c) => c.overall === null);
     }
+    if (roundFilter !== "all") r = r.filter((c) => matchesRound(c, roundFilter));
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       r = r.filter((c) => `${c.name} ${c.email} ${c.phone} ${c.role}`.toLowerCase().includes(q));
@@ -98,7 +122,7 @@ export function CandidatesTable({ candidates, batchName, passMark }: { candidate
       else cmp = (order[a.status] ?? 9) - (order[b.status] ?? 9);
       return sortDir === "desc" ? -cmp : cmp;
     });
-  }, [candidates, statusFilter, verdictFilter, search, sortField, sortDir, passMark]);
+  }, [candidates, statusFilter, verdictFilter, roundFilter, search, sortField, sortDir, passMark]);
 
   const exportCSV = () => {
     const cell = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
@@ -146,6 +170,18 @@ export function CandidatesTable({ candidates, batchName, passMark }: { candidate
         </div>
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
           {pills([{ key: "all", label: "All" }, { key: "waiting", label: "Pending" }, { key: "in_progress", label: "Active" }, { key: "completed", label: "Completed" }], statusFilter, setStatusFilter)}
+          <select aria-label="Filter by round" className="input-field !w-auto !py-1.5 text-sm" value={roundFilter} onChange={(e) => setRoundFilter(e.target.value)}>
+            <option value="all">All rounds</option>
+            <option value="notstarted">Not started</option>
+            <optgroup label="In this round now">
+              {rounds.map((k) => <option key={k} value={`now:${k}`}>{PHASE_LABEL[k]}</option>)}
+              {stages.map((st) => <option key={st} value={`now:puzzle:${st}`}>Puzzle, stage {st}</option>)}
+            </optgroup>
+            <optgroup label="Finished">
+              {rounds.map((k) => <option key={k} value={`done:${k}`}>{PHASE_LABEL[k]}</option>)}
+            </optgroup>
+            <option value="offline">No signal (over 1 min)</option>
+          </select>
           {pills([{ key: "all", label: "All Results" }, { key: "pass", label: `Pass (${passMark}+)` }, { key: "fail", label: "Fail" }, { key: "unscored", label: "Unscored" }], verdictFilter, setVerdictFilter)}
         </div>
       </div>
@@ -165,7 +201,7 @@ export function CandidatesTable({ candidates, batchName, passMark }: { candidate
                   <th className={thSort} onClick={() => toggleSort("status")}>Status <SortIcon field="status" /></th>
                   <th className={thSort} onClick={() => toggleSort("score")}>Score <SortIcon field="score" /></th>
                   <th className={th}>Result</th>
-                  <th className={th}>Right now</th>
+                  <th className={th}>Progress</th>
                   <th className={th}>Proctoring</th>
                   <th className={thSort} onClick={() => toggleSort("date")}>Registered <SortIcon field="date" /></th>
                   <th className="px-6 py-3" />
@@ -213,7 +249,7 @@ export function CandidatesTable({ candidates, batchName, passMark }: { candidate
                           <span className="text-sm text-gray-400">-</span>
                         )}
                       </td>
-                      <td className="px-6 py-4">{c.status === "in_progress" && c.live ? <NowCell live={c.live} /> : <span className="text-sm text-gray-400">-</span>}</td>
+                      <td className="px-6 py-4">{(c.status === "in_progress" || c.status === "completed") && c.live ? <NowCell live={c.live} running={c.status === "in_progress"} /> : <span className="text-sm text-gray-400">-</span>}</td>
                       <td className="px-6 py-4">
                         {total > 0 ? (
                           <div className="flex items-center gap-1.5">
