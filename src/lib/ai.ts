@@ -3,7 +3,7 @@ import type { Interview, TranscriptEntry } from "./store";
 import { DEFAULT_AI_SETTINGS, AISettings, getOrgAISettings } from "./ai-settings";
 import { aiLimits } from "./ai-limits";
 import type { PhaseResolution } from "./phase-engine";
-import type { Hint } from "./runbook";
+import type { Hint, PuzzleStage } from "./runbook";
 import { DSA_REVIEW_ROUND, buildDsaReviewMessages, extractInterviewerNotes } from "./prompt/dsa-review";
 
 export function stripThinking(text: string): string {
@@ -418,6 +418,8 @@ export interface DsaTurnContext {
   resolution: PhaseResolution;
   unlockedHint: Hint | null;
   scratchpad: string;
+  /** Multi-stage puzzle only: its stages and the current one. */
+  puzzleStage?: { stages: PuzzleStage[]; index: number } | null;
 }
 
 export function buildInterviewPrompt(
@@ -442,6 +444,7 @@ export function buildInterviewPrompt(
       history: transcript,
       scratchpad: dsa.scratchpad,
       unlockedHint: dsa.unlockedHint,
+      puzzleStage: dsa.puzzleStage ?? null,
     });
   }
   // Calculate time remaining

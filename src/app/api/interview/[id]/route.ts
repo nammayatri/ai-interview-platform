@@ -9,6 +9,7 @@ import { getInterviewBatch } from "@/lib/batches-api";
 import { isValidShareKey, shareKeyFor } from "@/lib/share-key";
 import { candidateProctoringView } from "@/lib/batch-settings";
 import { getInterviewSettings } from "@/lib/interview-settings";
+import { getPuzzleStageProgress } from "@/lib/dsa-turn";
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -62,7 +63,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const candidateView = !session || !!url.searchParams.get("token");
   const batch = await getInterviewBatch(id);
   // A candidate never receives the scorecard, even though the room reads the rest of this record.
-  const body: any = candidateView ? { ...projectInterviewForCandidate(interview), scorecard: null } : { ...interview, shareKey: shareKeyFor(id) };
+  const puzzleStages = candidateView && interview.roundType === "DSA Review" ? await getPuzzleStageProgress(id, interview.phases || []) : null;
+  const body: any = candidateView ? { ...projectInterviewForCandidate(interview, { puzzleStages }), scorecard: null } : { ...interview, shareKey: shareKeyFor(id) };
   if (candidateView) body.proctoringRules = candidateProctoringView(await getInterviewSettings(id));
   if (batch && candidateView) delete batch.passMark; // the candidate never sees the passing mark
   return NextResponse.json(batch ? { ...body, batch } : body);

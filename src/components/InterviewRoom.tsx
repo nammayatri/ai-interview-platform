@@ -70,6 +70,16 @@ function serverLog(level: "info" | "warn" | "error", message: string, interviewI
   }).catch(() => {});
 }
 
+// The AI's voice failing to play (autoplay blocked, no output device, bad audio) was silent; report it once per page.
+let audioFailureReported = false;
+function reportAudioPlayFailure(err: unknown, interviewId?: string) {
+  console.warn("[Audio] AI voice could not play:", err);
+  if (audioFailureReported) return;
+  audioFailureReported = true;
+  const e = err as { name?: string; message?: string } | undefined;
+  serverLog("warn", `AI voice could not play: ${e?.name || "error"} ${e?.message || ""}`.trim(), interviewId);
+}
+
 // Format AI text: render tables, lists, and line breaks nicely
 function formatAIText(text: string) {
   const lines = text.split("\n");
@@ -859,7 +869,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
               await new Promise<void>((resolve) => {
                 audio.onended = () => { setIsAISpeaking(false); isAISpeakingRef.current = false; setCurrentAIText(""); URL.revokeObjectURL(audioUrl); resolve(); };
                 audio.onerror = () => { setIsAISpeaking(false); isAISpeakingRef.current = false; URL.revokeObjectURL(audioUrl); resolve(); };
-                audio.play().catch(() => resolve());
+                audio.play().catch((err) => { reportAudioPlayFailure(err, interviewId); resolve(); });
               });
             }
           }
@@ -898,7 +908,7 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
             await new Promise<void>((resolve) => {
               audio.onended = () => { URL.revokeObjectURL(audioUrl); resolve(); };
               audio.onerror = () => { URL.revokeObjectURL(audioUrl); resolve(); };
-              audio.play().catch(() => resolve());
+              audio.play().catch((err) => { reportAudioPlayFailure(err, interviewId); resolve(); });
             });
           } catch {}
           isPlaying = false;
@@ -1912,6 +1922,8 @@ export function InterviewRoom({ interviewId }: { interviewId: string }) {
             title={dsa.active ? (dsa.active.phaseKey === "parta" ? dsa.active.problemTitle || "" : dsa.active.selected?.title || "") : ""}
             phaseRemainingSec={dsa.active ? dsa.phaseRemainingSec : null}
             totalRemainingSec={remainingSeconds}
+            // Stage boxes while the puzzle runs, and at the wrap-up right after it (not once another part has started).
+            stages={!dsa.active || dsa.active.phaseKey === "puzzle" ? dsa.stageProgress : null}
           />
         </div>
       )}

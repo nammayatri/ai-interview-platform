@@ -7,6 +7,7 @@ import Link from "next/link";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { normalizeScorecard } from "@/lib/normalize-scorecard";
 import { ConfirmModal } from "@/components/ConfirmModal";
+import { StageProgressCard } from "@/components/review/StageProgressCard";
 
 import { toHundred } from "@/lib/score-scale";
 const dimensionLabels: Record<string, string> = {
@@ -525,6 +526,9 @@ export default function InterviewDetailPage({ params }: { params: { id: string }
 
           {/* Right Sidebar */}
           <div className="space-y-6">
+            {/* Current stage: which part / puzzle stage the candidate is in (Coding Evaluation interviews only) */}
+            {interview.roundType === "DSA Review" && <StageProgressCard interviewId={params.id} />}
+
             {/* Resume Info */}
             <div className="card p-6 animate-fade-in-right delay-1">
               <h2 className="text-lg font-semibold text-gray-900 mb-3">Resume</h2>

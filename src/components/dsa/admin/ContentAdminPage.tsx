@@ -8,6 +8,8 @@ import { DashboardLayout } from "@/components/DashboardLayout";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { validateProblemRunbook, validatePuzzleRunbook } from "@/lib/runbook";
 import { AddButton, HintLadderEditor, MarkdownField, NumberField, RemoveButton, RubricEditor, Section, StringListEditor } from "./fields";
+import { emptyPuzzleForm, formToPuzzleRunbook, puzzleFormErrors, puzzleToForm, type PuzzleForm } from "@/lib/puzzle-form";
+import { PuzzleStagesEditor } from "./PuzzleStagesEditor";
 
 type Kind = "parta" | "dsa" | "puzzle";
 
@@ -27,6 +29,8 @@ interface Draft {
   difficulty: string;
   tags: string;
   runbook: any;
+  /** Puzzles only: Setup, the stage cards and Grading notes (turned into the runbook on save, see lib/puzzle-form.ts). */
+  puzzle?: PuzzleForm;
 }
 
 const emptyProblem = (): Draft => ({
@@ -49,12 +53,13 @@ const emptyPuzzle = (): Draft => ({
   tags: "",
   runbook: {
     statementMd: "",
-    acceptedAnswers: [""],
+    acceptedAnswers: [],
     noReveal: [],
     expectedMin: 6,
     hintLadder: [],
     rubric: [{ id: "c1", text: "", weight: 1, mapsTo: "problemSolving" }],
   },
+  puzzle: emptyPuzzleForm(),
 });
 
 const COPY = {
@@ -92,7 +97,13 @@ function toDraft(kind: Kind, item: Item): Draft {
       failed: rb.outcomeProbes?.failed?.length ? rb.outcomeProbes.failed : [""],
     };
   }
-  return { title: item.title, difficulty: item.difficulty || "", tags: (item.tags || []).join(", "), runbook: merged };
+  return {
+    title: item.title,
+    difficulty: item.difficulty || "",
+    tags: (item.tags || []).join(", "),
+    runbook: merged,
+    ...(kind === "puzzle" ? { puzzle: puzzleToForm(rb) } : {}),
+  };
 }
 
 export function ContentAdminPage({ kind }: { kind: Kind }) {
@@ -130,12 +141,13 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
   const close = () => { setDraft(null); setEditing(null); };
 
   const setRunbook = (patch: any) => setDraft((d) => (d ? { ...d, runbook: { ...d.runbook, ...patch } } : d));
+  const setPuzzle = (patch: Partial<PuzzleForm>) => setDraft((d) => (d && d.puzzle ? { ...d, puzzle: { ...d.puzzle, ...patch } } : d));
 
   const payloadOf = (d: Draft) => ({
     title: d.title.trim(),
     difficulty: d.difficulty || null,
     tags: d.tags.split(",").map((t) => t.trim()).filter(Boolean),
-    runbook: d.runbook,
+    runbook: kind === "puzzle" && d.puzzle ? formToPuzzleRunbook(d.puzzle, d.runbook) : d.runbook,
     ...(copy.apiKind ? { kind: copy.apiKind } : {}),
   });
 
@@ -144,6 +156,7 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
     const payload = payloadOf(draft);
     const local: string[] = [];
     if (!payload.title) local.push("title is required");
+    if (kind === "puzzle" && draft.puzzle) local.push(...puzzleFormErrors(draft.puzzle, draft.runbook?.noReveal || []));
     const v = kind !== "puzzle" ? validateProblemRunbook(payload.runbook) : validatePuzzleRunbook(payload.runbook);
     if (!v.ok) local.push(...v.errors);
     if (!v.ok || local.length) { setErrors(local); return; }
@@ -193,11 +206,13 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
       const hasEnvelope = parsed && typeof parsed === "object" && parsed.runbook;
       const base = kind !== "puzzle" ? emptyProblem() : emptyPuzzle();
       const runbook = hasEnvelope ? parsed.runbook : parsed;
+      const merged = { ...base.runbook, ...runbook };
       setDraft((d) => ({
         title: hasEnvelope && parsed.title ? String(parsed.title) : d?.title || "",
         difficulty: hasEnvelope && parsed.difficulty ? String(parsed.difficulty) : d?.difficulty || "medium",
         tags: hasEnvelope && Array.isArray(parsed.tags) ? parsed.tags.join(", ") : d?.tags || "",
-        runbook: { ...base.runbook, ...runbook },
+        runbook: merged,
+        ...(kind === "puzzle" ? { puzzle: puzzleToForm(runbook) } : {}),
       }));
       setErrors([]);
       setShowJson(false);
@@ -250,7 +265,7 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
                 <p className="text-xs text-gray-500 mb-3">
                   {kind !== "puzzle"
                     ? `${item.runbook?.solutionTracks?.length ?? 0} tracks · ${item.runbook?.hintLadder?.length ?? 0} hints · ${item.runbook?.rubric?.length ?? 0} criteria`
-                    : `~${item.expectedMin ?? item.runbook?.expectedMin} min · ${item.runbook?.hintLadder?.length ?? 0} hints · ${item.runbook?.rubric?.length ?? 0} criteria`}
+                    : `~${item.expectedMin ?? item.runbook?.expectedMin} min${(item.runbook?.stages?.length ?? 0) >= 2 ? ` · ${item.runbook.stages.length} stages` : ""} · ${item.runbook?.hintLadder?.length ?? 0} hints · ${item.runbook?.rubric?.length ?? 0} criteria`}
                 </p>
                 <div className="flex gap-2 pt-3 border-t border-gray-100">
                   <button onClick={() => openEdit(item)} className="text-xs text-indigo-600 hover:text-indigo-800">{isAdmin ? "Edit" : "View"}</button>
@@ -310,8 +325,24 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
                       <input value={draft.tags} onChange={(e) => setDraft({ ...draft, tags: e.target.value })} className="input-field" placeholder="arrays, hashing" />
                     </div>
                   </div>
-                  <MarkdownField label="Statement (markdown)" value={rb.statementMd} onChange={(v) => setRunbook({ statementMd: v })} hint={kind === "puzzle" ? "Keep it prose-first: the AI reads this aloud once." : undefined} />
+                  {kind === "puzzle" && draft.puzzle ? (
+                    <MarkdownField
+                      label="Setup (optional, markdown)"
+                      value={draft.puzzle.setupMd}
+                      onChange={(v) => setPuzzle({ setupMd: v, notice: undefined })}
+                      rows={4}
+                      hint="The shared story and rules, the same for every stage. Shown at the top of the candidate's screen and read out first; each stage's question goes in its stage. Leave empty for a plain one-question puzzle."
+                    />
+                  ) : (
+                    <MarkdownField label="Statement (markdown)" value={rb.statementMd} onChange={(v) => setRunbook({ statementMd: v })} />
+                  )}
                 </Section>
+
+                {kind === "puzzle" && draft.puzzle && (
+                  <Section title="Stages" subtitle="Stage 1 is always there. Each stage has its own question and accepted answer; stages are numbered by their order.">
+                    <PuzzleStagesEditor stages={draft.puzzle.stages} onChange={(stages) => setPuzzle({ stages })} notice={draft.puzzle.notice} />
+                  </Section>
+                )}
 
                 {kind !== "puzzle" ? (
                   <>
@@ -343,8 +374,19 @@ export function ContentAdminPage({ kind }: { kind: Kind }) {
                     </Section>}
                   </>
                 ) : (
-                  <Section title="Answers and timing">
-                    <StringListEditor label="Accepted answers" items={rb.acceptedAnswers} onChange={(acceptedAnswers) => setRunbook({ acceptedAnswers })} placeholder="Short answer, judged by the AI (not string-matched)" />
+                  <Section title="Whole puzzle">
+                    <div>
+                      <label className="label" htmlFor="puzzle-grading">Grading notes <span className="font-normal text-gray-400">(optional)</span></label>
+                      <textarea
+                        id="puzzle-grading"
+                        value={draft.puzzle?.gradingNotes ?? ""}
+                        onChange={(e) => setPuzzle({ gradingNotes: e.target.value })}
+                        rows={3}
+                        className="input-field"
+                        placeholder="How to grade overall, e.g. hire if Stages 1 and 2 are solved with at most 2 hints"
+                      />
+                      <p className="text-xs text-gray-400 mt-1">Used by scoring together with each stage's accepted answer.</p>
+                    </div>
                     <StringListEditor label="Never say before the candidate does" items={rb.noReveal || []} onChange={(noReveal) => setRunbook({ noReveal })} placeholder="A word or phrase that gives the answer away, e.g. binary, 10 testers, grid" />
                     <NumberField label="Expected minutes" min={1} value={rb.expectedMin} onChange={(expectedMin) => setRunbook({ expectedMin })} hint="Used to decide whether the puzzle fits in the remaining time." />
                   </Section>

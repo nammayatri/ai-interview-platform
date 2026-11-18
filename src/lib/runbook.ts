@@ -53,6 +53,20 @@ export interface ProblemRunbook {
   defaults: { budgetMin: number; graceMin: number; earlyDoneAfterMin: number };
 }
 
+/** One stage of a multi-stage puzzle, presented in order (see lib/puzzle-stages.ts). */
+export interface PuzzleStage {
+  /** Short name shown on the candidate's stage boxes and used in the [STAGE:label] marker, e.g. "1", "1B", "BONUS". */
+  label: string;
+  /** What the interviewer says to present this stage. */
+  questionMd: string;
+  /** This stage's accepted answer and reasoning (the puzzle form also writes it into acceptedAnswers as "STAGE n: ..."). */
+  answer?: string;
+  /** When the interviewer may move on from this stage (plain words for the AI). */
+  moveOnWhen?: string;
+  /** Phrases that only appear when this stage is presented; a backup signal when the AI forgets the marker. */
+  cues?: string[];
+}
+
 export interface PuzzleRunbook {
   statementMd: string;
   acceptedAnswers: string[];
@@ -61,6 +75,12 @@ export interface PuzzleRunbook {
   expectedMin: number;
   hintLadder: Hint[];
   rubric: RubricCriterion[];
+  /** Two or more stages make this a multi-stage puzzle; absent or one stage = a single question, as before. */
+  stages?: PuzzleStage[];
+  /** The puzzle form's shared story and rules (statementMd is built from it plus Stage 1's question). */
+  setupMd?: string;
+  /** The puzzle form's overall grading guidance (also written into acceptedAnswers as "GRADING: ..."). */
+  gradingNotes?: string;
 }
 
 export type Outcome = "passed" | "partial" | "failed";
@@ -206,9 +226,57 @@ export function validatePuzzleRunbook(raw: unknown): ValidationResult<PuzzleRunb
 
   const hintLadder = validateHints(raw.hintLadder, errors);
   const rubric = validateRubric(raw.rubric, errors);
+  const stages = validatePuzzleStages(raw.stages, errors);
+  const setupMd = str(raw.setupMd).trim();
+  if (setupMd.length > LIMITS.statementChars) errors.push(`setupMd: max ${LIMITS.statementChars} characters`);
+  const gradingNotes = str(raw.gradingNotes).trim();
+  if (gradingNotes.length > LIMITS.statementChars) errors.push(`gradingNotes: max ${LIMITS.statementChars} characters`);
 
   if (errors.length) return { ok: false, errors };
-  return { ok: true, value: { statementMd, acceptedAnswers: strList(raw.acceptedAnswers), noReveal: strList(raw.noReveal).slice(0, 80).map((p) => p.slice(0, 80)), expectedMin: Math.ceil(expectedMin), hintLadder, rubric } };
+  return {
+    ok: true,
+    value: {
+      statementMd,
+      acceptedAnswers: strList(raw.acceptedAnswers),
+      noReveal: strList(raw.noReveal).slice(0, 80).map((p) => p.slice(0, 80)),
+      expectedMin: Math.ceil(expectedMin),
+      hintLadder,
+      rubric,
+      ...(stages.length ? { stages } : {}),
+      // Kept even when empty: it marks a puzzle saved by the stage form (see lib/puzzle-form.ts).
+      ...(typeof raw.setupMd === "string" ? { setupMd } : {}),
+      ...(gradingNotes ? { gradingNotes } : {}),
+    },
+  };
+}
+
+export const MAX_PUZZLE_STAGES = 10;
+
+function validatePuzzleStages(raw: unknown, errors: string[]): PuzzleStage[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) { errors.push("stages must be a list"); return []; }
+  if (raw.length > MAX_PUZZLE_STAGES) errors.push(`stages: at most ${MAX_PUZZLE_STAGES}`);
+  const seen = new Set<string>();
+  const out: PuzzleStage[] = [];
+  raw.slice(0, MAX_PUZZLE_STAGES).forEach((s, i) => {
+    if (!isObj(s)) { errors.push(`stages[${i}] must be an object`); return; }
+    // The same characters the [STAGE:label] marker keeps (see parseMarkers), so a label always round-trips.
+    const label = str(s.label).replace(/[^\w .+-]/g, "").trim().slice(0, 30);
+    const questionMd = str(s.questionMd).trim();
+    if (!label) errors.push(`stages[${i}]: label is required (letters, digits, spaces, . + - _)`);
+    if (!questionMd) errors.push(`stages[${i}]: questionMd is required`);
+    if (questionMd.length > LIMITS.statementChars) errors.push(`stages[${i}]: questionMd max ${LIMITS.statementChars} characters`);
+    if (label && seen.has(label.toLowerCase())) errors.push(`stages[${i}]: duplicate label "${label}"`);
+    // [STAGE:done] reports the last stage as solved (see puzzle-stages.ts), so no stage may be called that.
+    if (label.toLowerCase() === "done") errors.push(`stages[${i}]: the label "done" is reserved`);
+    seen.add(label.toLowerCase());
+    const moveOnWhen = str(s.moveOnWhen).trim().slice(0, LIMITS.shortText);
+    const cues = strList(s.cues).slice(0, 10).map((c) => c.slice(0, 80));
+    const answer = str(s.answer).trim();
+    if (answer.length > LIMITS.statementChars) errors.push(`stages[${i}]: answer max ${LIMITS.statementChars} characters`);
+    out.push({ label, questionMd, ...(answer ? { answer } : {}), ...(moveOnWhen ? { moveOnWhen } : {}), ...(cues.length ? { cues } : {}) });
+  });
+  return out;
 }
 
 // ─── Submissions ────────────────────────────────────────────────────────────
