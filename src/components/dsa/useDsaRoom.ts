@@ -3,6 +3,7 @@
 // Client state for the DSA Review room. The client never decides a phase transition:
 // it only displays what the server reports and reacts to it.
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { StageProgress } from "@/lib/puzzle-stages";
 
 export interface CandidatePhase {
   phaseKey: "parta" | "dsa" | "puzzle";
@@ -13,6 +14,8 @@ export interface CandidatePhase {
   problemTitle?: string;
   runbook?: { statementMd: string };
   selected?: { title: string; runbook: { statementMd: string } };
+  /** puzzle only, multi-stage: the stage boxes */
+  stages?: StageProgress;
 }
 
 export interface CandidateSubmission {
@@ -37,6 +40,8 @@ export interface PhaseInfoFromServer {
   elapsedMin: number;
   budgetMin: number;
   remainingTotalMin: number;
+  /** multi-stage puzzle only: the stage boxes after this turn */
+  stages?: StageProgress | null;
 }
 
 export interface PhaseTransitionFromServer {
@@ -53,6 +58,7 @@ export function useDsaRoom({ interviewId, tokenRef, enabled }: { interviewId: st
   const [phases, setPhases] = useState<CandidatePhase[]>([]);
   const [submissions, setSubmissions] = useState<CandidateSubmission[]>([]);
   const [snapshot, setSnapshot] = useState<PhaseSnapshot | null>(null);
+  const [stageProgress, setStageProgress] = useState<StageProgress | null>(null);
   const [scratchpad, setScratchpadState] = useState("");
   const scratchpadRef = useRef("");
   const activeKeyRef = useRef<string | null>(null);
@@ -67,6 +73,7 @@ export function useDsaRoom({ interviewId, tokenRef, enabled }: { interviewId: st
   const load = useCallback((interview: any, opts?: { initialScratchpad?: boolean }) => {
     const ph: CandidatePhase[] = Array.isArray(interview?.phases) ? interview.phases : [];
     setPhases(ph);
+    setStageProgress(ph.find((p) => p.phaseKey === "puzzle" && p.stages)?.stages ?? null);
     setSubmissions(Array.isArray(interview?.submissions) ? interview.submissions : []);
     if (opts?.initialScratchpad && typeof interview?.scratchpad === "string") {
       scratchpadRef.current = interview.scratchpad;
@@ -104,6 +111,7 @@ export function useDsaRoom({ interviewId, tokenRef, enabled }: { interviewId: st
       setScratchpadState("");
     }
     activeKeyRef.current = info.key;
+    setStageProgress(info.stages ?? null);
     setSnapshot(info.key ? { key: info.key, elapsedMin: info.elapsedMin, budgetMin: info.budgetMin, at: Date.now() } : null);
   }, []);
 
@@ -119,5 +127,5 @@ export function useDsaRoom({ interviewId, tokenRef, enabled }: { interviewId: st
     ? Math.max(0, Math.round(snapshot.budgetMin * 60 - (snapshot.elapsedMin * 60 + (Date.now() - snapshot.at) / 1000)))
     : null;
 
-  return { phases, submissions, snapshot, active, phaseRemainingSec, scratchpad, scratchpadRef, setScratchpad, load, refresh, applyServerPhase, activeKeyRef, pollMs: POLL_MS };
+  return { phases, submissions, snapshot, stageProgress, active, phaseRemainingSec, scratchpad, scratchpadRef, setScratchpad, load, refresh, applyServerPhase, activeKeyRef, pollMs: POLL_MS };
 }

@@ -124,6 +124,15 @@ export async function hasEvent(interviewId: string, phaseKey: PhaseKey, type: st
   return rows.length > 0;
 }
 
+/** Label of the last puzzle stage the interviewer moved to (the latest "stage" event), or null before any move. */
+export async function getLastStageLabel(interviewId: string): Promise<string | null> {
+  const { rows } = await pool.query(
+    "SELECT payload->>'label' AS label FROM interview_events WHERE interview_id = $1 AND phase_key = 'puzzle' AND type = 'stage' ORDER BY id DESC LIMIT 1",
+    [interviewId]
+  );
+  return rows[0]?.label ?? null;
+}
+
 // ─── Creation ───────────────────────────────────────────────────────────────
 
 /** Inserts the Part A submission. Must run inside the caller's transaction. */

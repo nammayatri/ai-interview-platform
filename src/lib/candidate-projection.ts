@@ -5,6 +5,7 @@ import type { PhaseRow } from "./phase-engine";
 import type { Submission } from "./phase-store";
 import { phaseMaterial } from "./phase-config";
 import type { PartAPhaseConfig } from "./runbook";
+import type { StageProgress } from "./puzzle-stages";
 
 export interface CandidatePhase {
   phaseKey: string;
@@ -17,9 +18,11 @@ export interface CandidatePhase {
   runbook?: { statementMd: string };
   /** dsa / puzzle: only once the stage is active (the random pick is not revealed earlier) */
   selected?: { title: string; runbook: { statementMd: string } };
+  /** puzzle only, multi-stage: the stage boxes (labels and progress, never a stage's question or answer) */
+  stages?: StageProgress;
 }
 
-export function projectPhaseForCandidate(p: PhaseRow): CandidatePhase {
+export function projectPhaseForCandidate(p: PhaseRow, puzzleStages?: StageProgress | null): CandidatePhase {
   const out: CandidatePhase = {
     phaseKey: p.phaseKey,
     status: p.status,
@@ -35,6 +38,7 @@ export function projectPhaseForCandidate(p: PhaseRow): CandidatePhase {
     const m = phaseMaterial(p);
     if (m.ready) out.selected = { title: m.title, runbook: { statementMd: m.statementMd } };
   }
+  if (p.phaseKey === "puzzle" && puzzleStages) out.stages = puzzleStages;
   return out;
 }
 
@@ -43,11 +47,14 @@ export function projectSubmissionForCandidate(s: Submission) {
 }
 
 /** Returns a copy of the interview that is safe to send to the candidate's browser. */
-export function projectInterviewForCandidate<T extends { roundType?: string; phases?: PhaseRow[]; submissions?: Submission[] }>(interview: T): T {
+export function projectInterviewForCandidate<T extends { roundType?: string; phases?: PhaseRow[]; submissions?: Submission[] }>(
+  interview: T,
+  extras: { puzzleStages?: StageProgress | null } = {}
+): T {
   if (interview.roundType !== "DSA Review") return interview;
   return {
     ...interview,
-    phases: (interview.phases || []).map(projectPhaseForCandidate) as any,
+    phases: (interview.phases || []).map((p) => projectPhaseForCandidate(p, extras.puzzleStages)) as any,
     // Context submissions are for the AI only; the candidate sees their primary submission.
     submissions: (interview.submissions || []).filter((s) => s.isPrimary).map(projectSubmissionForCandidate) as any,
   };

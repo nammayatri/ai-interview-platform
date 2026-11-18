@@ -1,9 +1,14 @@
 "use client";
 
+import type { StageProgress } from "@/lib/puzzle-stages";
+import { StageBoxes } from "./StageBoxes";
+
 const fmt = (sec: number) => `${Math.floor(sec / 60).toString().padStart(2, "0")}:${(sec % 60).toString().padStart(2, "0")}`;
 
-export function PhaseHeader({ phaseKey, title, phaseRemainingSec, totalRemainingSec }: {
+export function PhaseHeader({ phaseKey, title, phaseRemainingSec, totalRemainingSec, stages }: {
   phaseKey: "parta" | "dsa" | "puzzle" | null; title: string; phaseRemainingSec: number | null; totalRemainingSec: number;
+  /** Multi-stage puzzle only. */
+  stages?: StageProgress | null;
 }) {
   const label = phaseKey === "parta" ? "Part A · Your solution" : phaseKey === "dsa" ? "DSA · Solve a problem" : phaseKey === "puzzle" ? "Puzzle" : "Wrapping up";
   return (
@@ -12,6 +17,7 @@ export function PhaseHeader({ phaseKey, title, phaseRemainingSec, totalRemaining
         <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-400">{label}</p>
         {title && <p className="truncate text-sm font-medium text-zinc-100">{title}</p>}
       </div>
+      {stages && stages.labels.length >= 2 && <StageBoxes stages={stages} tone="dark" />}
       <div className="flex shrink-0 items-center gap-4 font-mono text-xs">
         {phaseRemainingSec !== null && (
           <span className={phaseRemainingSec <= 60 ? "text-amber-300" : "text-zinc-300"} title="Time left in this part">

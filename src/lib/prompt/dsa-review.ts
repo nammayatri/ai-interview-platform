@@ -7,7 +7,7 @@
 import type { AISettings } from "../ai-settings";
 import { CLOSE_RESERVE_MIN, type PhaseResolution, type PhaseRow } from "../phase-engine";
 import { phaseFlow, phaseMaterial } from "../phase-config";
-import { STAGE_LABELS, type DsaPhaseConfig, type Hint, type PartAPhaseConfig, type PuzzlePhaseConfig } from "../runbook";
+import { STAGE_LABELS, type DsaPhaseConfig, type Hint, type PartAPhaseConfig, type PuzzlePhaseConfig, type PuzzleStage } from "../runbook";
 import type { Submission } from "../phase-store";
 import type { TranscriptEntry } from "../store";
 
@@ -28,6 +28,8 @@ export interface DsaPromptInput {
   history: Pick<TranscriptEntry, "role" | "text">[];
   scratchpad: string;
   unlockedHint: Hint | null;
+  /** Multi-stage puzzle only: its stages and the one being worked on (the server tracks it). */
+  puzzleStage?: { stages: PuzzleStage[]; index: number } | null;
 }
 
 type Msg = { role: string; content: string };
@@ -156,6 +158,35 @@ function stageMarkerNote(phase: PhaseRow): string {
   return `\n\nSTAGE MARKER: on the turn where you present a new stage (the statement counts as stage 1, so mark it on the opening turn), append [STAGE:label] at the very end, where label is the stage's own name in the flow above (for example 1, 1B, 2, BONUS, 3). Append it once per stage and never speak it.`;
 }
 
+/**
+ * Multi-stage puzzle: the server tells the interviewer which stage it is on and shows it only the next stage's
+ * question, with the exact marker to report the move (the candidate's stage boxes follow the accepted marker).
+ */
+export function puzzleStageSection(ps: { stages: PuzzleStage[]; index: number }): string {
+  const { stages } = ps;
+  const n = stages.length;
+  const i = Math.min(Math.max(0, ps.index), n - 1);
+  const cur = stages[i];
+  const moveOn = cur.moveOnWhen
+    ? cur.moveOnWhen.replace(/[.\s]+$/, "")
+    :"the candidate has answered this stage and explained their reasoning, or is clearly stuck after the help you are allowed to give";
+  const head = `\n\nSTAGES: this puzzle has ${n} stages, run strictly in order, one at a time. The candidate sees ${n} progress boxes and the statement above; you present every later stage out loud. Never mention, preview or hint at a stage before you reach it, and never go back to an earlier one.
+CURRENT STAGE: ${i + 1} of ${n} (label "${cur.label}").
+${cur.questionMd}
+MOVE ON FROM THIS STAGE ONLY WHEN: ${moveOn}.`;
+  if (i === n - 1) {
+    return `${head}
+This is the LAST stage. There are no more stages after it. How you close the puzzle depends on whether the candidate solved it:
+- SOLVED (they gave a correct answer for this stage): close the puzzle in one short sentence and end that reply with [STAGE:done] [PHASE_DONE].
+- NOT SOLVED (they are stuck, gave up, or time is short): close the puzzle in one short sentence and append only [PHASE_DONE]. Never write [STAGE:done] unless this stage was actually solved.
+Both markers are removed before speech; never say them.`;
+  }
+  const next = stages[i + 1];
+  return `${head}
+NEXT STAGE: ${i + 2} of ${n} (label "${next.label}"). Present it only once the current stage is done. On that turn, ask its question in your own spoken words, and end that reply with [STAGE:${next.label}] (it is removed before speech; never say it). Its question:
+${next.questionMd}`;
+}
+
 function tracksText(rb: PartAPhaseConfig["runbook"]): string {
   return rb.solutionTracks
     .map((t, i) => {
@@ -268,7 +299,7 @@ ${sel.runbook.statementMd}
 
 ${accepted}
 
-${flowSection(phase, "PUZZLE")}${stageMarkerNote(phase)}${priorPhasesNote(inp)}${phaseTimeNote(phase, inp.resolution)}${hintSection(inp.unlockedHint)}${scratchpadSection(inp.scratchpad)}${globalTimeNote(inp.resolution)}${opening}`;
+${flowSection(phase, "PUZZLE")}${inp.puzzleStage ? puzzleStageSection(inp.puzzleStage) : stageMarkerNote(phase)}${priorPhasesNote(inp)}${phaseTimeNote(phase, inp.resolution)}${hintSection(inp.unlockedHint)}${scratchpadSection(inp.scratchpad)}${globalTimeNote(inp.resolution)}${opening}`;
 }
 
 function buildClosingSystem(inp: DsaPromptInput): string {

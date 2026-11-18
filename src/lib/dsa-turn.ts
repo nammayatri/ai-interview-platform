@@ -21,6 +21,7 @@ import {
   activateFirstPhase,
   advancePhase,
   appendHintUse,
+  getLastStageLabel,
   getPhases,
   getScratchpad,
   hasEvent,
@@ -30,11 +31,12 @@ import {
   type PhaseTransition,
 } from "./phase-store";
 import { phaseMaterial } from "./phase-config";
-import { LIMITS, type Hint } from "./runbook";
+import { LIMITS, type Hint, type PuzzleStage } from "./runbook";
 import { addTranscriptEntry, getPhaseTranscript, type Interview, type TranscriptEntry } from "./store";
 import { pool } from "./db";
 import { guardReply, lockedPhrases, withLockedPhrases } from "./reveal-guard";
 import type { PuzzlePhaseConfig } from "./runbook";
+import { currentStageIndex, decideStageAdvance, puzzleStages, stageProgress, type StageProgress } from "./puzzle-stages";
 
 export interface DsaTurnInput {
   /** The candidate's new message. Saved to the transcript unless skipSave. */
@@ -58,6 +60,8 @@ export interface DsaTurnPrep {
   priorTransition: PhaseTransition | null;
   /** Phrases the interviewer may not say this turn (the candidate has not said them yet); the reply is cut if it does. */
   lockedPhrases: string[];
+  /** Multi-stage puzzle only: its stages and the one this turn is spoken in. */
+  puzzleStage: { stages: PuzzleStage[]; index: number } | null;
 }
 
 export interface PhaseInfo {
@@ -66,6 +70,25 @@ export interface PhaseInfo {
   elapsedMin: number;
   budgetMin: number;
   remainingTotalMin: number;
+  /** Multi-stage puzzle only: what the candidate's stage boxes show. */
+  stages?: StageProgress | null;
+}
+
+/** The stages of the puzzle phase, or [] when it has none (single question) or no puzzle is selected yet. */
+function stagesOfPhase(phase: PhaseRow | null | undefined): PuzzleStage[] {
+  if (!phase || phase.phaseKey !== "puzzle") return [];
+  return puzzleStages((phase.config as PuzzlePhaseConfig).selected?.runbook);
+}
+
+/** The stage boxes of the interview's puzzle phase (null when there is no multi-stage puzzle running or finished). */
+export async function getPuzzleStageProgress(interviewId: string, phases: PhaseRow[]): Promise<StageProgress | null> {
+  const puzzle = phases.find((p) => p.phaseKey === "puzzle");
+  const stages = stagesOfPhase(puzzle);
+  if (!puzzle || stages.length < 2 || (puzzle.status !== "active" && puzzle.status !== "completed")) return null;
+  const index = currentStageIndex(stages, await getLastStageLabel(interviewId));
+  // The last box is green only when the interviewer reported the last stage solved (see decideStageAdvance).
+  const lastSolved = await hasEvent(interviewId, "puzzle", "stage_solved");
+  return stageProgress(stages, index, puzzle, lastSolved);
 }
 
 export interface DsaTurnResult {
@@ -154,9 +177,12 @@ export async function prepareDsaTurn(interview: Interview, input: DsaTurnInput):
     ? nextUnlockedHint(ladderOf(phase), phase.hintsUsed.map((h) => h.order), resolution.elapsedInPhaseMin, phase.weakAnswers)
     : null;
 
+  const stages = stagesOfPhase(phase);
+  const puzzleStage = stages.length >= 2 ? { stages, index: currentStageIndex(stages, await getLastStageLabel(interview.id)) } : null;
+
   const enriched: Interview = { ...interview, phases, scratchpad };
   const settings = await getOrgAISettings(interview.orgId);
-  let messages = buildInterviewPrompt(enriched, promptHistory as TranscriptEntry[], settings, { resolution, unlockedHint, scratchpad });
+  let messages = buildInterviewPrompt(enriched, promptHistory as TranscriptEntry[], settings, { resolution, unlockedHint, scratchpad, puzzleStage });
 
   // Phrases that would give the answer away stay locked until the candidate says them.
   const locked = phase && phase.phaseKey === "puzzle"
@@ -180,6 +206,7 @@ export async function prepareDsaTurn(interview: Interview, input: DsaTurnInput):
     expectAssess: !!phase && !ephemeral && !!last && last.role === "candidate",
     priorTransition,
     lockedPhrases: locked,
+    puzzleStage,
   };
 }
 
@@ -221,8 +248,23 @@ export async function finalizeDsaTurn(prep: DsaTurnPrep, raw: string): Promise<D
   let transition: PhaseTransition | null = null;
 
   if (phase) {
-    // Which stage of the puzzle the interviewer has just presented (for the live view of a running batch).
-    if (markers.stage) await logEvent(pool, id, phaseKey, "stage", { label: markers.stage });
+    if (prep.puzzleStage) {
+      // Multi-stage puzzle: the server owns the stage. Only a move to the next stage is accepted.
+      // A stage only moves on in a reply to a real candidate answer: never on the puzzle's opening turn or a silence nudge
+      // (a stray [STAGE:2] there would skip Stage 1). Cue phrases are checked in what is actually spoken (after the guard).
+      const { stages, index } = prep.puzzleStage;
+      const move = prep.expectAssess ? decideStageAdvance(stages, index, markers.stage, text) : { advanceTo: null, ignoredLabel: markers.stage && markers.stage.toLowerCase() !== stages[index].label.toLowerCase() ? markers.stage : undefined };
+      if (move.advanceTo !== null) {
+        await logEvent(pool, id, phaseKey, "stage", { label: stages[move.advanceTo].label, via: move.via });
+      } else if (move.solvedLast) {
+        if (!(await hasEvent(id, "puzzle", "stage_solved"))) await logEvent(pool, id, phaseKey, "stage_solved", { label: stages[index].label, via: "marker" });
+      } else if (move.ignoredLabel) {
+        await logEvent(pool, id, phaseKey, "stage_ignored", { label: move.ignoredLabel, current: stages[index].label });
+      }
+    } else if (markers.stage) {
+      // Single-question puzzle with a staged runbook: record what the interviewer reported (live batch view only).
+      await logEvent(pool, id, phaseKey, "stage", { label: markers.stage });
+    }
     const d = decideMarkers(markers, {
       unlockedHintOrder: prep.unlockedHint ? prep.unlockedHint.order : null,
       elapsedInPhaseMin: resolution.elapsedInPhaseMin,
@@ -256,10 +298,11 @@ export async function finalizeDsaTurn(prep: DsaTurnPrep, raw: string): Promise<D
   }
 
   const phasesNow = await getPhases(id);
+  const stagesNow = await getPuzzleStageProgress(id, phasesNow);
   const base: DsaTurnResult = {
     text,
     endInterview: hasEndSignal,
-    phase: phaseInfo(phasesNow, interview),
+    phase: { ...phaseInfo(phasesNow, interview), ...(stagesNow ? { stages: stagesNow } : {}) },
     ...(hintUsed !== undefined ? { hintUsed } : {}),
   };
   if (transition) {
